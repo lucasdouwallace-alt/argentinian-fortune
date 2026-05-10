@@ -387,11 +387,125 @@ function Dashboard() {
           </div>
         </section>
 
+        {/* Open positions */}
+        <section className="bg-card border rounded-xl shadow-card overflow-hidden">
+          <div className="px-4 py-3 border-b flex items-center justify-between gap-3">
+            <h2 className="font-display font-semibold">Posiciones abiertas</h2>
+            <div className="flex items-center gap-3 text-xs">
+              <span className="text-muted-foreground">{positions.length} abiertas</span>
+              {positions.length > 0 && (
+                <span className={`font-mono font-bold ${totalPnlUsd >= 0 ? "text-success" : "text-destructive"}`} data-mono>
+                  P&L total: {totalPnlUsd >= 0 ? "+" : ""}{usd(totalPnlUsd)} ({pct(totalPnlPct)})
+                </span>
+              )}
+            </div>
+          </div>
+          {positions.length === 0 ? (
+            <div className="text-center text-sm text-muted-foreground py-8">
+              Sin posiciones abiertas. Tocá <span className="text-foreground">Comprar</span> en un activo.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-xs text-muted-foreground uppercase border-b">
+                  <tr>
+                    <th className="text-left px-4 py-2">Activo</th>
+                    <th className="text-right px-4 py-2">Cant.</th>
+                    <th className="text-right px-4 py-2">Entrada</th>
+                    <th className="text-right px-4 py-2">Actual</th>
+                    <th className="text-right px-4 py-2">P&L USD</th>
+                    <th className="text-right px-4 py-2 hidden sm:table-cell">P&L %</th>
+                    <th className="text-right px-4 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {positionsLive.map(p => {
+                    const positive = p.pnl_usd >= 0;
+                    return (
+                      <tr key={p.id} className="border-b last:border-0">
+                        <td className="px-4 py-3">
+                          <div className="font-display font-bold">{p.ticker}</div>
+                          <div className="text-xs text-muted-foreground">{timeAgo(p.entry_date)}</div>
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono" data-mono>{p.quantity}</td>
+                        <td className="px-4 py-3 text-right font-mono text-muted-foreground" data-mono>{usd(Number(p.entry_price_usd))}</td>
+                        <td className="px-4 py-3 text-right font-mono" data-mono>{p.current_price_usd ? usd(p.current_price_usd) : "—"}</td>
+                        <td className={`px-4 py-3 text-right font-mono ${positive ? "text-success" : "text-destructive"}`} data-mono>
+                          {p.current_price_usd ? `${positive ? "+" : ""}${usd(p.pnl_usd)}` : "—"}
+                        </td>
+                        <td className={`px-4 py-3 text-right font-mono hidden sm:table-cell ${positive ? "text-success" : "text-destructive"}`} data-mono>
+                          {p.current_price_usd ? pct(p.pnl_pct) : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={closingId === p.id}
+                            onClick={() => handleClose(p.id, p.ticker)}
+                          >
+                            <X className="size-3 mr-1" />
+                            {closingId === p.id ? "Cerrando..." : "Cerrar"}
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
         <p className="text-xs text-muted-foreground text-center pt-4 pb-8 flex items-center justify-center gap-1">
           <AlertTriangle className="size-3" />
           App educativa · No constituye asesoramiento financiero
         </p>
       </main>
+
+      {/* Buy confirmation dialog */}
+      <Dialog open={!!buyDialog} onOpenChange={(o) => !o && setBuyDialog(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirmar compra · {buyDialog?.ticker}</DialogTitle>
+            <DialogDescription>
+              El precio de entrada se toma de Alpaca al momento de confirmar.
+              {(() => {
+                const live = buyDialog ? priceByTicker.get(buyDialog.ticker) : 0;
+                const qty = Number(buyDialog?.qty || 0);
+                if (!live) return null;
+                const total = live * (Number.isFinite(qty) ? qty : 0);
+                return (
+                  <span className="block mt-2 text-foreground">
+                    Precio actual: <span className="font-mono">{usd(live)}</span> · Total estimado:{" "}
+                    <span className="font-mono">{usd(total)}</span>
+                    {snapshot?.mep ? <span className="text-muted-foreground"> ({ars(total * snapshot.mep)})</span> : null}
+                  </span>
+                );
+              })()}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="qty">Cantidad</Label>
+            <Input
+              id="qty"
+              type="number"
+              min="0"
+              step="0.0001"
+              value={buyDialog?.qty || ""}
+              onChange={(e) => setBuyDialog(d => d ? { ...d, qty: e.target.value } : d)}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setBuyDialog(null)} disabled={submittingTrade}>
+              Cancelar
+            </Button>
+            <Button onClick={handleConfirmBuy} disabled={submittingTrade}>
+              {submittingTrade ? "Comprando..." : "Confirmar compra"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
