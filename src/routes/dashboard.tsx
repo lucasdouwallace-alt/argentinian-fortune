@@ -225,7 +225,7 @@ function Dashboard() {
           </Button>
           {snapshot && (
             <span className="text-xs text-muted-foreground self-center ml-auto">
-              Precios {timeAgo(snapshot.fx_updated_at)} · {snapshot.is_open ? "REST" : "Último cierre"}
+              Precios {timeAgo(snapshot.fx_updated_at)} · {streamLive ? "WS Alpaca" : snapshot.is_open ? "REST" : "Último cierre"}
             </span>
           )}
         </div>
