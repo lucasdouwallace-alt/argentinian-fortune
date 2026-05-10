@@ -1,15 +1,21 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { getMarketSnapshot, type MarketSnapshot } from "@/lib/prices.functions";
 import { analyzeMarket, type MarketAnalysis } from "@/lib/analyze.functions";
+import { openPosition, closePosition } from "@/lib/positions.functions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { usd, ars, pct, timeAgo } from "@/lib/format";
 import { toast } from "sonner";
-import { Sparkles, RefreshCw, LogOut, Brain, TrendingUp, TrendingDown, Minus, AlertTriangle } from "lucide-react";
+import { Sparkles, RefreshCw, LogOut, Brain, TrendingUp, TrendingDown, Minus, AlertTriangle, ShoppingCart, X } from "lucide-react";
 
 export const Route = createFileRoute("/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard · Oráculo" }] }),
@@ -39,19 +45,34 @@ function signalColor(s: string) {
   return "bg-muted text-muted-foreground border-border";
 }
 
+type Position = {
+  id: string;
+  ticker: string;
+  quantity: number;
+  entry_price_usd: number;
+  entry_date: string;
+  mep_at_entry: number | null;
+};
+
 function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
   const navigate = useNavigate();
   const fetchSnapshot = useServerFn(getMarketSnapshot);
   const fetchAnalysis = useServerFn(analyzeMarket);
+  const fnOpenPosition = useServerFn(openPosition);
+  const fnClosePosition = useServerFn(closePosition);
 
   const [profile, setProfile] = useState<Profile | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [positions, setPositions] = useState<Position[]>([]);
   const [snapshot, setSnapshot] = useState<MarketSnapshot | null>(null);
   const [analysis, setAnalysis] = useState<MarketAnalysis | null>(null);
   const [loadingSnap, setLoadingSnap] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
   const [prevPrices, setPrevPrices] = useState<Record<string, number>>({});
+  const [buyDialog, setBuyDialog] = useState<{ ticker: string; qty: string } | null>(null);
+  const [submittingTrade, setSubmittingTrade] = useState(false);
+  const [closingId, setClosingId] = useState<string | null>(null);
 
   // auth gate
   useEffect(() => {
@@ -72,6 +93,53 @@ function Dashboard() {
       setAssets((a || []) as Asset[]);
     })();
   }, [user, navigate]);
+
+  const loadPositions = useCallback(async () => {
+    if (!user) return;
+    const { data } = await supabase
+      .from("positions")
+      .select("id, ticker, quantity, entry_price_usd, entry_date, mep_at_entry")
+      .eq("user_id", user.id)
+      .eq("status", "open")
+      .order("entry_date", { ascending: false });
+    setPositions((data || []) as Position[]);
+  }, [user]);
+
+  useEffect(() => { loadPositions(); }, [loadPositions]);
+
+  const handleConfirmBuy = async () => {
+    if (!buyDialog) return;
+    const qty = Number(buyDialog.qty);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      toast.error("Cantidad inválida");
+      return;
+    }
+    setSubmittingTrade(true);
+    try {
+      const res = await fnOpenPosition({ data: { ticker: buyDialog.ticker, quantity: qty } });
+      toast.success(`Comprado ${res.quantity} ${res.ticker} @ ${usd(res.entry_price_usd)}`);
+      setBuyDialog(null);
+      await loadPositions();
+    } catch (e) {
+      toast.error("Error: " + (e as Error).message);
+    } finally {
+      setSubmittingTrade(false);
+    }
+  };
+
+  const handleClose = async (id: string, ticker: string) => {
+    setClosingId(id);
+    try {
+      const res = await fnClosePosition({ data: { id } });
+      const sign = res.pnl_usd >= 0 ? "+" : "";
+      toast.success(`Cerrado ${ticker} @ ${usd(res.exit_price_usd)} · P&L ${sign}${usd(res.pnl_usd)} (${pct(res.pnl_pct)})`);
+      await loadPositions();
+    } catch (e) {
+      toast.error("Error: " + (e as Error).message);
+    } finally {
+      setClosingId(null);
+    }
+  };
 
   const refreshSnap = useCallback(async () => {
     setLoadingSnap(true);
@@ -161,6 +229,19 @@ function Dashboard() {
 
   const totalCapitalUsd = snapshot?.mep ? profile.monthly_capital_ars / snapshot.mep : 0;
   const aiByTicker = new Map(analysis?.assets.map(a => [a.ticker, a]) || []);
+  const priceByTicker = useMemo(
+    () => new Map((snapshot?.quotes || []).map(q => [q.ticker, q.price_usd])),
+    [snapshot]
+  );
+  const positionsLive = useMemo(() => positions.map(p => {
+    const cur = priceByTicker.get(p.ticker) || 0;
+    const pnl_usd = cur ? (cur - Number(p.entry_price_usd)) * Number(p.quantity) : 0;
+    const pnl_pct = cur ? (cur / Number(p.entry_price_usd) - 1) * 100 : 0;
+    return { ...p, current_price_usd: cur, pnl_usd, pnl_pct };
+  }), [positions, priceByTicker]);
+  const totalPnlUsd = positionsLive.reduce((a, p) => a + (p.current_price_usd ? p.pnl_usd : 0), 0);
+  const totalCostUsd = positionsLive.reduce((a, p) => a + Number(p.entry_price_usd) * Number(p.quantity), 0);
+  const totalPnlPct = totalCostUsd ? (totalPnlUsd / totalCostUsd) * 100 : 0;
 
   return (
     <div className="min-h-screen bg-glow">
@@ -245,6 +326,7 @@ function Dashboard() {
                   <th className="text-right px-4 py-2 hidden sm:table-cell">Precio ARS</th>
                   <th className="text-right px-4 py-2">Día</th>
                   <th className="text-left px-4 py-2 hidden md:table-cell">Señal IA</th>
+                  <th className="text-right px-4 py-2"></th>
                 </tr>
               </thead>
               <tbody>
@@ -284,15 +366,94 @@ function Dashboard() {
                           </div>
                         ) : <span className="text-xs text-muted-foreground inline-flex items-center gap-1"><Minus className="size-3" /> Sin análisis</span>}
                       </td>
+                      <td className="px-4 py-3 text-right">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!q?.price_usd}
+                          onClick={() => setBuyDialog({ ticker: asset.ticker, qty: "1" })}
+                        >
+                          <ShoppingCart className="size-3 mr-1" /> Comprar
+                        </Button>
+                      </td>
                     </tr>
                   );
                 })}
                 {assets.length === 0 && (
-                  <tr><td colSpan={5} className="text-center text-muted-foreground py-8">Sin activos en cartera.</td></tr>
+                  <tr><td colSpan={6} className="text-center text-muted-foreground py-8">Sin activos en cartera.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
+        </section>
+
+        {/* Open positions */}
+        <section className="bg-card border rounded-xl shadow-card overflow-hidden">
+          <div className="px-4 py-3 border-b flex items-center justify-between gap-3">
+            <h2 className="font-display font-semibold">Posiciones abiertas</h2>
+            <div className="flex items-center gap-3 text-xs">
+              <span className="text-muted-foreground">{positions.length} abiertas</span>
+              {positions.length > 0 && (
+                <span className={`font-mono font-bold ${totalPnlUsd >= 0 ? "text-success" : "text-destructive"}`} data-mono>
+                  P&L total: {totalPnlUsd >= 0 ? "+" : ""}{usd(totalPnlUsd)} ({pct(totalPnlPct)})
+                </span>
+              )}
+            </div>
+          </div>
+          {positions.length === 0 ? (
+            <div className="text-center text-sm text-muted-foreground py-8">
+              Sin posiciones abiertas. Tocá <span className="text-foreground">Comprar</span> en un activo.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-xs text-muted-foreground uppercase border-b">
+                  <tr>
+                    <th className="text-left px-4 py-2">Activo</th>
+                    <th className="text-right px-4 py-2">Cant.</th>
+                    <th className="text-right px-4 py-2">Entrada</th>
+                    <th className="text-right px-4 py-2">Actual</th>
+                    <th className="text-right px-4 py-2">P&L USD</th>
+                    <th className="text-right px-4 py-2 hidden sm:table-cell">P&L %</th>
+                    <th className="text-right px-4 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {positionsLive.map(p => {
+                    const positive = p.pnl_usd >= 0;
+                    return (
+                      <tr key={p.id} className="border-b last:border-0">
+                        <td className="px-4 py-3">
+                          <div className="font-display font-bold">{p.ticker}</div>
+                          <div className="text-xs text-muted-foreground">{timeAgo(p.entry_date)}</div>
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono" data-mono>{p.quantity}</td>
+                        <td className="px-4 py-3 text-right font-mono text-muted-foreground" data-mono>{usd(Number(p.entry_price_usd))}</td>
+                        <td className="px-4 py-3 text-right font-mono" data-mono>{p.current_price_usd ? usd(p.current_price_usd) : "—"}</td>
+                        <td className={`px-4 py-3 text-right font-mono ${positive ? "text-success" : "text-destructive"}`} data-mono>
+                          {p.current_price_usd ? `${positive ? "+" : ""}${usd(p.pnl_usd)}` : "—"}
+                        </td>
+                        <td className={`px-4 py-3 text-right font-mono hidden sm:table-cell ${positive ? "text-success" : "text-destructive"}`} data-mono>
+                          {p.current_price_usd ? pct(p.pnl_pct) : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={closingId === p.id}
+                            onClick={() => handleClose(p.id, p.ticker)}
+                          >
+                            <X className="size-3 mr-1" />
+                            {closingId === p.id ? "Cerrando..." : "Cerrar"}
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
         <p className="text-xs text-muted-foreground text-center pt-4 pb-8 flex items-center justify-center gap-1">
@@ -300,6 +461,51 @@ function Dashboard() {
           App educativa · No constituye asesoramiento financiero
         </p>
       </main>
+
+      {/* Buy confirmation dialog */}
+      <Dialog open={!!buyDialog} onOpenChange={(o) => !o && setBuyDialog(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirmar compra · {buyDialog?.ticker}</DialogTitle>
+            <DialogDescription>
+              El precio de entrada se toma de Alpaca al momento de confirmar.
+              {(() => {
+                const live = buyDialog ? priceByTicker.get(buyDialog.ticker) : 0;
+                const qty = Number(buyDialog?.qty || 0);
+                if (!live) return null;
+                const total = live * (Number.isFinite(qty) ? qty : 0);
+                return (
+                  <span className="block mt-2 text-foreground">
+                    Precio actual: <span className="font-mono">{usd(live)}</span> · Total estimado:{" "}
+                    <span className="font-mono">{usd(total)}</span>
+                    {snapshot?.mep ? <span className="text-muted-foreground"> ({ars(total * snapshot.mep)})</span> : null}
+                  </span>
+                );
+              })()}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="qty">Cantidad</Label>
+            <Input
+              id="qty"
+              type="number"
+              min="0"
+              step="0.0001"
+              value={buyDialog?.qty || ""}
+              onChange={(e) => setBuyDialog(d => d ? { ...d, qty: e.target.value } : d)}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setBuyDialog(null)} disabled={submittingTrade}>
+              Cancelar
+            </Button>
+            <Button onClick={handleConfirmBuy} disabled={submittingTrade}>
+              {submittingTrade ? "Comprando..." : "Confirmar compra"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
