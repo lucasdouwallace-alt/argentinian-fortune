@@ -14,7 +14,180 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      portfolio_assets: {
+        Row: {
+          created_at: string
+          id: string
+          is_active: boolean
+          name: string
+          pct_allocation: number
+          sl_pct: number
+          ticker: string
+          tipo: string | null
+          tp_pct: number
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name: string
+          pct_allocation: number
+          sl_pct: number
+          ticker: string
+          tipo?: string | null
+          tp_pct: number
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name?: string
+          pct_allocation?: number
+          sl_pct?: number
+          ticker?: string
+          tipo?: string | null
+          tp_pct?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
+      positions: {
+        Row: {
+          ccl_at_entry: number | null
+          entry_date: string
+          entry_price_ars: number | null
+          entry_price_usd: number
+          exit_date: string | null
+          exit_price_usd: number | null
+          id: string
+          mep_at_entry: number | null
+          pnl_pct: number | null
+          pnl_usd: number | null
+          quantity: number
+          status: string
+          ticker: string
+          user_id: string
+        }
+        Insert: {
+          ccl_at_entry?: number | null
+          entry_date?: string
+          entry_price_ars?: number | null
+          entry_price_usd: number
+          exit_date?: string | null
+          exit_price_usd?: number | null
+          id?: string
+          mep_at_entry?: number | null
+          pnl_pct?: number | null
+          pnl_usd?: number | null
+          quantity?: number
+          status?: string
+          ticker: string
+          user_id: string
+        }
+        Update: {
+          ccl_at_entry?: number | null
+          entry_date?: string
+          entry_price_ars?: number | null
+          entry_price_usd?: number
+          exit_date?: string | null
+          exit_price_usd?: number | null
+          id?: string
+          mep_at_entry?: number | null
+          pnl_pct?: number | null
+          pnl_usd?: number | null
+          quantity?: number
+          status?: string
+          ticker?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          created_at: string
+          disclaimer_accepted_at: string | null
+          horizon: string | null
+          id: string
+          monthly_capital_ars: number | null
+          name: string | null
+          onboarding_completed: boolean
+          risk_tolerance: string | null
+          sector_preference: string | null
+        }
+        Insert: {
+          created_at?: string
+          disclaimer_accepted_at?: string | null
+          horizon?: string | null
+          id: string
+          monthly_capital_ars?: number | null
+          name?: string | null
+          onboarding_completed?: boolean
+          risk_tolerance?: string | null
+          sector_preference?: string | null
+        }
+        Update: {
+          created_at?: string
+          disclaimer_accepted_at?: string | null
+          horizon?: string | null
+          id?: string
+          monthly_capital_ars?: number | null
+          name?: string | null
+          onboarding_completed?: boolean
+          risk_tolerance?: string | null
+          sector_preference?: string | null
+        }
+        Relationships: []
+      }
+      signal_history: {
+        Row: {
+          confidence: number | null
+          confirmed_at: string | null
+          confirmed_by_user: boolean
+          created_at: string
+          id: string
+          market_score: number | null
+          mep_at_signal: number | null
+          price_at_signal_ars: number | null
+          price_at_signal_usd: number | null
+          reason: string | null
+          signal: string
+          ticker: string
+          user_id: string
+        }
+        Insert: {
+          confidence?: number | null
+          confirmed_at?: string | null
+          confirmed_by_user?: boolean
+          created_at?: string
+          id?: string
+          market_score?: number | null
+          mep_at_signal?: number | null
+          price_at_signal_ars?: number | null
+          price_at_signal_usd?: number | null
+          reason?: string | null
+          signal: string
+          ticker: string
+          user_id: string
+        }
+        Update: {
+          confidence?: number | null
+          confirmed_at?: string | null
+          confirmed_by_user?: boolean
+          created_at?: string
+          id?: string
+          market_score?: number | null
+          mep_at_signal?: number | null
+          price_at_signal_ars?: number | null
+          price_at_signal_usd?: number | null
+          reason?: string | null
+          signal?: string
+          ticker?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
