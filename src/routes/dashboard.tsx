@@ -171,7 +171,7 @@ function Dashboard() {
             <Sparkles className="size-5 text-primary" />
             <span className="font-display font-bold">Oráculo</span>
           </Link>
-          <span className={`text-xs ${snapshot?.is_open ? "pulse-dot text-success" : "text-muted-foreground"}`}>
+          <span className={`text-xs ${streamLive || snapshot?.is_open ? "pulse-dot text-success" : "text-muted-foreground"}`}>
             {streamLive ? "LIVE · stream" : snapshot?.is_open ? "LIVE" : "Mercado cerrado"}
           </span>
           <div className="ml-auto flex items-center gap-2">
