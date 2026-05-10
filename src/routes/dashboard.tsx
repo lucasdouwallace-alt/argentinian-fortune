@@ -90,13 +90,48 @@ function Dashboard() {
     }
   }, [fetchSnapshot, snapshot]);
 
-  // initial + 30s polling
+  // initial + 30s polling fallback (REST)
   useEffect(() => {
     if (!user) return;
     refreshSnap();
     const id = setInterval(refreshSnap, 30000);
     return () => clearInterval(id);
   }, [user, refreshSnap]);
+
+  // Live stream via SSE proxying Alpaca WebSocket
+  const [streamLive, setStreamLive] = useState(false);
+  useEffect(() => {
+    if (!user) return;
+    const es = new EventSource("/api/stream/prices");
+    es.addEventListener("ready", () => setStreamLive(true));
+    const applyPrice = (ticker: string, price: number, ts: string) => {
+      if (!price || price <= 0) return;
+      setSnapshot(prev => {
+        if (!prev) return prev;
+        const quotes = prev.quotes.map(q => {
+          if (q.ticker !== ticker) return q;
+          setPrevPrices(pp => ({ ...pp, [ticker]: q.price_usd }));
+          return { ...q, price_usd: price, ts };
+        });
+        return { ...prev, quotes, fx_updated_at: ts };
+      });
+    };
+    es.addEventListener("trade", (ev: MessageEvent) => {
+      try {
+        const d = JSON.parse(ev.data);
+        applyPrice(d.ticker, d.price, d.ts);
+      } catch {/* noop */}
+    });
+    es.addEventListener("quote", (ev: MessageEvent) => {
+      try {
+        const d = JSON.parse(ev.data);
+        const mid = d.bid && d.ask ? (d.bid + d.ask) / 2 : d.ask || d.bid;
+        applyPrice(d.ticker, mid, d.ts);
+      } catch {/* noop */}
+    });
+    es.onerror = () => setStreamLive(false);
+    return () => { es.close(); setStreamLive(false); };
+  }, [user]);
 
   const runAnalysis = async () => {
     if (!snapshot || !profile) return;
