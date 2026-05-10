@@ -326,6 +326,7 @@ function Dashboard() {
                   <th className="text-right px-4 py-2 hidden sm:table-cell">Precio ARS</th>
                   <th className="text-right px-4 py-2">Día</th>
                   <th className="text-left px-4 py-2 hidden md:table-cell">Señal IA</th>
+                  <th className="text-right px-4 py-2"></th>
                 </tr>
               </thead>
               <tbody>
