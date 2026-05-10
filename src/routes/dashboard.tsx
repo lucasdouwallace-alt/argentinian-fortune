@@ -172,7 +172,7 @@ function Dashboard() {
             <span className="font-display font-bold">Oráculo</span>
           </Link>
           <span className={`text-xs ${snapshot?.is_open ? "pulse-dot text-success" : "text-muted-foreground"}`}>
-            {snapshot?.is_open ? "LIVE" : "Mercado cerrado"}
+            {streamLive ? "LIVE · stream" : snapshot?.is_open ? "LIVE" : "Mercado cerrado"}
           </span>
           <div className="ml-auto flex items-center gap-2">
             <span className="text-xs text-muted-foreground hidden sm:inline">Hola, {profile.name}</span>
