@@ -45,19 +45,34 @@ function signalColor(s: string) {
   return "bg-muted text-muted-foreground border-border";
 }
 
+type Position = {
+  id: string;
+  ticker: string;
+  quantity: number;
+  entry_price_usd: number;
+  entry_date: string;
+  mep_at_entry: number | null;
+};
+
 function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
   const navigate = useNavigate();
   const fetchSnapshot = useServerFn(getMarketSnapshot);
   const fetchAnalysis = useServerFn(analyzeMarket);
+  const fnOpenPosition = useServerFn(openPosition);
+  const fnClosePosition = useServerFn(closePosition);
 
   const [profile, setProfile] = useState<Profile | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [positions, setPositions] = useState<Position[]>([]);
   const [snapshot, setSnapshot] = useState<MarketSnapshot | null>(null);
   const [analysis, setAnalysis] = useState<MarketAnalysis | null>(null);
   const [loadingSnap, setLoadingSnap] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
   const [prevPrices, setPrevPrices] = useState<Record<string, number>>({});
+  const [buyDialog, setBuyDialog] = useState<{ ticker: string; qty: string } | null>(null);
+  const [submittingTrade, setSubmittingTrade] = useState(false);
+  const [closingId, setClosingId] = useState<string | null>(null);
 
   // auth gate
   useEffect(() => {
