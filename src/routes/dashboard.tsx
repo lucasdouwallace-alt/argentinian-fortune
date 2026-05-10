@@ -94,6 +94,53 @@ function Dashboard() {
     })();
   }, [user, navigate]);
 
+  const loadPositions = useCallback(async () => {
+    if (!user) return;
+    const { data } = await supabase
+      .from("positions")
+      .select("id, ticker, quantity, entry_price_usd, entry_date, mep_at_entry")
+      .eq("user_id", user.id)
+      .eq("status", "open")
+      .order("entry_date", { ascending: false });
+    setPositions((data || []) as Position[]);
+  }, [user]);
+
+  useEffect(() => { loadPositions(); }, [loadPositions]);
+
+  const handleConfirmBuy = async () => {
+    if (!buyDialog) return;
+    const qty = Number(buyDialog.qty);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      toast.error("Cantidad inválida");
+      return;
+    }
+    setSubmittingTrade(true);
+    try {
+      const res = await fnOpenPosition({ data: { ticker: buyDialog.ticker, quantity: qty } });
+      toast.success(`Comprado ${res.quantity} ${res.ticker} @ ${usd(res.entry_price_usd)}`);
+      setBuyDialog(null);
+      await loadPositions();
+    } catch (e) {
+      toast.error("Error: " + (e as Error).message);
+    } finally {
+      setSubmittingTrade(false);
+    }
+  };
+
+  const handleClose = async (id: string, ticker: string) => {
+    setClosingId(id);
+    try {
+      const res = await fnClosePosition({ data: { id } });
+      const sign = res.pnl_usd >= 0 ? "+" : "";
+      toast.success(`Cerrado ${ticker} @ ${usd(res.exit_price_usd)} · P&L ${sign}${usd(res.pnl_usd)} (${pct(res.pnl_pct)})`);
+      await loadPositions();
+    } catch (e) {
+      toast.error("Error: " + (e as Error).message);
+    } finally {
+      setClosingId(null);
+    }
+  };
+
   const refreshSnap = useCallback(async () => {
     setLoadingSnap(true);
     try {
