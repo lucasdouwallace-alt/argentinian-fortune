@@ -90,13 +90,48 @@ function Dashboard() {
     }
   }, [fetchSnapshot, snapshot]);
 
-  // initial + 30s polling
+  // initial + 30s polling fallback (REST)
   useEffect(() => {
     if (!user) return;
     refreshSnap();
     const id = setInterval(refreshSnap, 30000);
     return () => clearInterval(id);
   }, [user, refreshSnap]);
+
+  // Live stream via SSE proxying Alpaca WebSocket
+  const [streamLive, setStreamLive] = useState(false);
+  useEffect(() => {
+    if (!user) return;
+    const es = new EventSource("/api/stream/prices");
+    es.addEventListener("ready", () => setStreamLive(true));
+    const applyPrice = (ticker: string, price: number, ts: string) => {
+      if (!price || price <= 0) return;
+      setSnapshot(prev => {
+        if (!prev) return prev;
+        const quotes = prev.quotes.map(q => {
+          if (q.ticker !== ticker) return q;
+          setPrevPrices(pp => ({ ...pp, [ticker]: q.price_usd }));
+          return { ...q, price_usd: price, ts };
+        });
+        return { ...prev, quotes, fx_updated_at: ts };
+      });
+    };
+    es.addEventListener("trade", (ev: MessageEvent) => {
+      try {
+        const d = JSON.parse(ev.data);
+        applyPrice(d.ticker, d.price, d.ts);
+      } catch {/* noop */}
+    });
+    es.addEventListener("quote", (ev: MessageEvent) => {
+      try {
+        const d = JSON.parse(ev.data);
+        const mid = d.bid && d.ask ? (d.bid + d.ask) / 2 : d.ask || d.bid;
+        applyPrice(d.ticker, mid, d.ts);
+      } catch {/* noop */}
+    });
+    es.onerror = () => setStreamLive(false);
+    return () => { es.close(); setStreamLive(false); };
+  }, [user]);
 
   const runAnalysis = async () => {
     if (!snapshot || !profile) return;
@@ -136,8 +171,8 @@ function Dashboard() {
             <Sparkles className="size-5 text-primary" />
             <span className="font-display font-bold">Oráculo</span>
           </Link>
-          <span className={`text-xs ${snapshot?.is_open ? "pulse-dot text-success" : "text-muted-foreground"}`}>
-            {snapshot?.is_open ? "LIVE" : "Mercado cerrado"}
+          <span className={`text-xs ${streamLive || snapshot?.is_open ? "pulse-dot text-success" : "text-muted-foreground"}`}>
+            {streamLive ? "LIVE · stream" : snapshot?.is_open ? "LIVE" : "Mercado cerrado"}
           </span>
           <div className="ml-auto flex items-center gap-2">
             <span className="text-xs text-muted-foreground hidden sm:inline">Hola, {profile.name}</span>
@@ -190,7 +225,7 @@ function Dashboard() {
           </Button>
           {snapshot && (
             <span className="text-xs text-muted-foreground self-center ml-auto">
-              Precios {timeAgo(snapshot.fx_updated_at)} · {snapshot.is_open ? "REST" : "Último cierre"}
+              Precios {timeAgo(snapshot.fx_updated_at)} · {streamLive ? "WS Alpaca" : snapshot.is_open ? "REST" : "Último cierre"}
             </span>
           )}
         </div>
