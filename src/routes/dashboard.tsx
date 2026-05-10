@@ -366,11 +366,21 @@ function Dashboard() {
                           </div>
                         ) : <span className="text-xs text-muted-foreground inline-flex items-center gap-1"><Minus className="size-3" /> Sin análisis</span>}
                       </td>
+                      <td className="px-4 py-3 text-right">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!q?.price_usd}
+                          onClick={() => setBuyDialog({ ticker: asset.ticker, qty: "1" })}
+                        >
+                          <ShoppingCart className="size-3 mr-1" /> Comprar
+                        </Button>
+                      </td>
                     </tr>
                   );
                 })}
                 {assets.length === 0 && (
-                  <tr><td colSpan={5} className="text-center text-muted-foreground py-8">Sin activos en cartera.</td></tr>
+                  <tr><td colSpan={6} className="text-center text-muted-foreground py-8">Sin activos en cartera.</td></tr>
                 )}
               </tbody>
             </table>
