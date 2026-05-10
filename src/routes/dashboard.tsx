@@ -1,15 +1,21 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { getMarketSnapshot, type MarketSnapshot } from "@/lib/prices.functions";
 import { analyzeMarket, type MarketAnalysis } from "@/lib/analyze.functions";
+import { openPosition, closePosition } from "@/lib/positions.functions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { usd, ars, pct, timeAgo } from "@/lib/format";
 import { toast } from "sonner";
-import { Sparkles, RefreshCw, LogOut, Brain, TrendingUp, TrendingDown, Minus, AlertTriangle } from "lucide-react";
+import { Sparkles, RefreshCw, LogOut, Brain, TrendingUp, TrendingDown, Minus, AlertTriangle, ShoppingCart, X } from "lucide-react";
 
 export const Route = createFileRoute("/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard · Oráculo" }] }),
