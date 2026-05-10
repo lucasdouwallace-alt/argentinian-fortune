@@ -229,6 +229,19 @@ function Dashboard() {
 
   const totalCapitalUsd = snapshot?.mep ? profile.monthly_capital_ars / snapshot.mep : 0;
   const aiByTicker = new Map(analysis?.assets.map(a => [a.ticker, a]) || []);
+  const priceByTicker = useMemo(
+    () => new Map((snapshot?.quotes || []).map(q => [q.ticker, q.price_usd])),
+    [snapshot]
+  );
+  const positionsLive = useMemo(() => positions.map(p => {
+    const cur = priceByTicker.get(p.ticker) || 0;
+    const pnl_usd = cur ? (cur - Number(p.entry_price_usd)) * Number(p.quantity) : 0;
+    const pnl_pct = cur ? (cur / Number(p.entry_price_usd) - 1) * 100 : 0;
+    return { ...p, current_price_usd: cur, pnl_usd, pnl_pct };
+  }), [positions, priceByTicker]);
+  const totalPnlUsd = positionsLive.reduce((a, p) => a + (p.current_price_usd ? p.pnl_usd : 0), 0);
+  const totalCostUsd = positionsLive.reduce((a, p) => a + Number(p.entry_price_usd) * Number(p.quantity), 0);
+  const totalPnlPct = totalCostUsd ? (totalPnlUsd / totalCostUsd) * 100 : 0;
 
   return (
     <div className="min-h-screen bg-glow">
