@@ -106,6 +106,11 @@ function Dashboard() {
   const [closingId, setClosingId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const cclState = useCcl();
+  const [showDisclaimer, setShowDisclaimer] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!localStorage.getItem("oraculo:disclaimer_accepted")) setShowDisclaimer(true);
+  }, []);
 
   // Filters
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
