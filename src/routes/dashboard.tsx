@@ -207,6 +207,7 @@ function Dashboard() {
       const a = await fetchAnalysis({
         data: {
           capital_ars: profile.monthly_capital_ars, mep: snap.mep, ccl: cclState.effective || snap.ccl || 0,
+          market_open: !!snap.is_open,
           quotes, positions: [],
         },
       });
