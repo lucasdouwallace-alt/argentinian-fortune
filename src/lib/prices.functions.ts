@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 
-const TICKERS = ["NVDA", "MELI", "PLTR", "VIST", "BMA"];
+const TICKERS = ["VIST", "MELI", "NVDA", "BMA", "PLTR", "GOOGL", "AAPL", "MSFT", "GGAL", "YPF"];
 
 const ALPACA_DATA = "https://data.alpaca.markets";
 const ALPACA_API = "https://api.alpaca.markets";
