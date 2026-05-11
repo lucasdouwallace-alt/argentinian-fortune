@@ -909,22 +909,18 @@ const OpportunityCard = memoCard(function OpportunityCardImpl({
   );
 });
 
-// React.memo wrapper that compares relevant props (price isolated via store).
-function memoCard<P extends OpportunityCardProps>(Component: React.FC<P>) {
-  return (function Memoized(props: P) {
-    const last = useRef<P | null>(null);
-    if (!last.current) { last.current = props; return <Component {...props} />; }
-    const prev = last.current;
-    const same =
-      prev.ticker === props.ticker &&
-      prev.sig === props.sig &&
-      prev.ccl === props.ccl &&
-      prev.highlight === props.highlight &&
-      prev.expanded === props.expanded &&
-      prev.onToggle === props.onToggle;
-    if (!same) last.current = props;
-    return <Component {...(same ? prev : props)} />;
-  });
+// React.memo wrapper — prices isolated via store, so card only re-renders
+// when its own analysis signal / expansion / ccl actually change.
+function memoCard(Component: React.FC<OpportunityCardProps>) {
+  return memo(Component, (prev, next) =>
+    prev.ticker === next.ticker &&
+    prev.sig === next.sig &&
+    prev.ccl === next.ccl &&
+    prev.highlight === next.highlight &&
+    prev.expanded === next.expanded &&
+    prev.name === next.name &&
+    prev.category === next.category,
+  );
 }
 
 // Hook: live positions PnL using store, so price ticks recompute without re-fetch.
