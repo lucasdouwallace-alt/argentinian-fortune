@@ -26,10 +26,15 @@ export type AssetSignal = {
   probability_pct: number;
   estimated_return_pct: number;
   horizon: string;
+  horizon_days: number;
   risk_level: "Bajo" | "Medio" | "Alto";
   action_reason: string;
   risk_note: string;
-  // Precios concretos (orden ejecutable)
+  // Niveles porcentuales (acciones/CEDEARs): el usuario aplica al precio de Balanz
+  stop_loss_pct: number;   // positivo, ej: 8 → -8%
+  take_profit_pct: number; // positivo, ej: 18 → +18%
+  entry_offset_pct: number; // 0 si COMPRAR ya; negativo si ESPERAR pullback; positivo si breakout
+  // Precios concretos legacy (referencia NYSE; UI muestra %)
   entry_price_usd: number;
   stop_price_usd: number;
   target_price_usd: number;
