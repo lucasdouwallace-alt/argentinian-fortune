@@ -12,11 +12,22 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { usd, ars, pct, timeAgo } from "@/lib/format";
 import { toast } from "sonner";
+import { usePrices, usePriceFor } from "@/lib/pricesStore";
+import { PriceCell } from "@/components/PriceCell";
 import {
-  Sparkles, RefreshCw, LogOut, Brain, TrendingUp, TrendingDown, AlertTriangle,
+  TICKER_CATALOG,
+  TICKER_NAME,
+  TICKER_CATEGORY,
+  CATEGORY_LABELS,
+  type TickerCategory,
+} from "@/lib/tickers";
+import {
+  Sparkles, RefreshCw, LogOut, Brain, TrendingUp, AlertTriangle,
   X, Bell, MessageSquare, History, Send, Search, ArrowUp, ArrowDown, Pause, ArrowRight, Target,
+  ChevronDown, ChevronUp,
 } from "lucide-react";
 
 export const Route = createFileRoute("/dashboard")({
@@ -32,14 +43,12 @@ type HistoryRow = {
   exit_price_usd: number | null; exit_date: string | null; status: string; pnl_usd: number | null; pnl_pct: number | null;
 };
 type ChatMsg = { role: "user" | "assistant"; content: string };
-
-const TICKER_NAMES: Record<string, string> = {
-  VIST: "Vista Energy", MELI: "MercadoLibre", NVDA: "NVIDIA", BMA: "Banco Macro",
-  PLTR: "Palantir", GOOGL: "Alphabet", AAPL: "Apple", MSFT: "Microsoft",
-  GGAL: "Grupo Galicia", YPF: "YPF",
-};
+type CategoryFilter = "all" | TickerCategory;
 
 const ANALYSIS_INTERVAL_MIN = 5;
+const INITIAL_VISIBLE = 10;
+const PAGE_SIZE = 10;
+const CCL_CACHE_KEY = "oraculo:ccl_last";
 
 function SignalPill({ signal, large = false }: { signal: AssetSignal["signal"] | string; large?: boolean }) {
   const cfg = {
@@ -62,10 +71,32 @@ function riskColor(r?: string) {
 }
 
 function bannerBg(s?: string) {
-  if (s === "COMPRAR") return "from-success/20 via-success/5 to-transparent border-success/30";
-  if (s === "VENDER") return "from-destructive/20 via-destructive/5 to-transparent border-destructive/30";
+  if (s === "COMPRAR") return "from-success/30 via-success/10 to-transparent border-success/40";
+  if (s === "VENDER") return "from-destructive/30 via-destructive/10 to-transparent border-destructive/40";
   if (s === "ESPERAR") return "from-warning/20 via-warning/5 to-transparent border-warning/30";
   return "from-muted via-muted/30 to-transparent border-border";
+}
+
+function scoreColor(score: number) {
+  if (score >= 70) return "text-success border-success/40";
+  if (score >= 40) return "text-warning border-warning/40";
+  return "text-destructive border-destructive/40";
+}
+
+function readCachedCcl(): { value: number; ts: number } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(CCL_CACHE_KEY);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    if (typeof j?.value === "number" && typeof j?.ts === "number") return j;
+  } catch { /* noop */ }
+  return null;
+}
+
+function writeCachedCcl(value: number) {
+  if (typeof window === "undefined") return;
+  try { localStorage.setItem(CCL_CACHE_KEY, JSON.stringify({ value, ts: Date.now() })); } catch { /* noop */ }
 }
 
 function Dashboard() {
@@ -76,6 +107,9 @@ function Dashboard() {
   const fnClosePosition = useServerFn(closePosition);
   const fnChat = useServerFn(chatWithOraculo);
 
+  const setBulkPrices = usePrices((s) => s.setBulk);
+  const setOnePrice = usePrices((s) => s.setOne);
+
   const [profile, setProfile] = useState<Profile | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
@@ -85,21 +119,30 @@ function Dashboard() {
   const [loadingAi, setLoadingAi] = useState(false);
   const [closingId, setClosingId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
+  const [cachedCcl, setCachedCcl] = useState<{ value: number; ts: number } | null>(null);
 
-  // ticking clock for "hace X min"
-  useEffect(() => { const id = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(id); }, []);
+  // Filters
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
+  const [tickerSearch, setTickerSearch] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
+  const [expandedTicker, setExpandedTicker] = useState<string | null>(null);
+
+  // 1s tick for countdowns
+  useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
+  useEffect(() => { setCachedCcl(readCachedCcl()); }, []);
 
   // auth gate
   useEffect(() => { if (!authLoading && !user) navigate({ to: "/auth" }); }, [authLoading, user, navigate]);
 
-  // load profile + portfolio
+  // load profile + portfolio (assets table only used for SL/TP config + positions)
   useEffect(() => {
     if (!user) return;
     (async () => {
       const { data: p } = await supabase.from("profiles").select("name, monthly_capital_ars, onboarding_completed").eq("id", user.id).maybeSingle();
       if (!p?.onboarding_completed) { navigate({ to: "/onboarding" }); return; }
       setProfile(p as Profile);
-      const { data: a } = await supabase.from("portfolio_assets").select("*").eq("user_id", user.id).eq("is_active", true).order("pct_allocation", { ascending: false });
+      const { data: a } = await supabase.from("portfolio_assets").select("*").eq("user_id", user.id).eq("is_active", true);
       setAssets((a || []) as Asset[]);
     })();
   }, [user, navigate]);
@@ -125,57 +168,77 @@ function Dashboard() {
     finally { setClosingId(null); }
   };
 
+  // Snapshot (fx + clock + bulk prices). SSE updates only the price store.
   const refreshSnap = useCallback(async () => {
-    try { setSnapshot(await fetchSnapshot()); }
-    catch (e) { toast.error("Error trayendo precios: " + (e as Error).message); }
-  }, [fetchSnapshot]);
+    try {
+      const snap = await fetchSnapshot();
+      setSnapshot(snap);
+      setBulkPrices(snap.quotes);
+      if (snap.ccl > 0) {
+        writeCachedCcl(snap.ccl);
+        setCachedCcl({ value: snap.ccl, ts: Date.now() });
+      }
+    } catch (e) { toast.error("Error trayendo precios: " + (e as Error).message); }
+  }, [fetchSnapshot, setBulkPrices]);
 
   useEffect(() => {
     if (!user) return;
     refreshSnap();
+    // Re-fetch CCL/snapshot every 30s; if CCL is missing keep retrying.
     const id = setInterval(refreshSnap, 30000);
     return () => clearInterval(id);
   }, [user, refreshSnap]);
 
-  // SSE live stream
+  // SSE live stream — uses ref to avoid reconnects on re-render.
   const [streamLive, setStreamLive] = useState(false);
+  const esRef = useRef<EventSource | null>(null);
   useEffect(() => {
     if (!user) return;
+    if (esRef.current) return;
     const es = new EventSource("/api/stream/prices");
+    esRef.current = es;
     es.addEventListener("ready", () => setStreamLive(true));
-    const apply = (ticker: string, price: number, ts: string) => {
-      if (!price || price <= 0) return;
-      setSnapshot(prev => prev ? { ...prev, fx_updated_at: ts, quotes: prev.quotes.map(q => q.ticker === ticker ? { ...q, price_usd: price, ts } : q) } : prev);
-    };
-    es.addEventListener("trade", (ev: MessageEvent) => { try { const d = JSON.parse(ev.data); apply(d.ticker, d.price, d.ts); } catch { /* noop */ } });
+    es.addEventListener("trade", (ev: MessageEvent) => {
+      try { const d = JSON.parse(ev.data); setOnePrice(d.ticker, d.price, d.ts); } catch { /* noop */ }
+    });
     es.addEventListener("quote", (ev: MessageEvent) => {
-      try { const d = JSON.parse(ev.data); const mid = d.bid && d.ask ? (d.bid + d.ask) / 2 : d.ask || d.bid; apply(d.ticker, mid, d.ts); } catch { /* noop */ }
+      try {
+        const d = JSON.parse(ev.data);
+        const mid = d.bid && d.ask ? (d.bid + d.ask) / 2 : d.ask || d.bid;
+        setOnePrice(d.ticker, mid, d.ts);
+      } catch { /* noop */ }
     });
     es.onerror = () => setStreamLive(false);
-    return () => { es.close(); setStreamLive(false); };
-  }, [user]);
+    return () => { es.close(); esRef.current = null; setStreamLive(false); };
+  }, [user, setOnePrice]);
 
+  // Analysis is INDEPENDENT of price ticks — only re-runs on interval / manual.
   const runAnalysis = useCallback(async () => {
-    if (!snapshot || !profile) return;
+    const snap = snapshot;
+    if (!snap || !profile) return;
     setLoadingAi(true);
     try {
+      // Snapshot ya trae todos los tickers; mandamos los que tienen precio.
+      const quotes = snap.quotes.filter((q) => q.price_usd > 0).map((q) => ({
+        ticker: q.ticker, price_usd: q.price_usd, change_pct: q.change_pct,
+      }));
       const a = await fetchAnalysis({
         data: {
-          capital_ars: profile.monthly_capital_ars, mep: snapshot.mep, ccl: snapshot.ccl,
-          quotes: snapshot.quotes.map(q => ({ ticker: q.ticker, price_usd: q.price_usd, change_pct: q.change_pct })),
-          positions: [],
+          capital_ars: profile.monthly_capital_ars, mep: snap.mep, ccl: snap.ccl || cachedCcl?.value || 0,
+          quotes, positions: [],
         },
       });
       setAnalysis(a); setAnalysisAt(Date.now());
     } catch (e) { toast.error("Error IA: " + (e as Error).message); }
     finally { setLoadingAi(false); }
-  }, [fetchAnalysis, snapshot, profile]);
+  }, [fetchAnalysis, snapshot, profile, cachedCcl]);
 
-  // auto-run analysis when snapshot arrives, then every N min
+  // Trigger once when first snapshot+profile arrive, and every N minutes thereafter.
   const didAutoRun = useRef(false);
   useEffect(() => {
-    if (!snapshot || !profile) return;
-    if (!didAutoRun.current) { didAutoRun.current = true; runAnalysis(); }
+    if (!snapshot || !profile || didAutoRun.current) return;
+    didAutoRun.current = true;
+    runAnalysis();
   }, [snapshot, profile, runAnalysis]);
   useEffect(() => {
     if (!profile) return;
@@ -183,20 +246,21 @@ function Dashboard() {
     return () => clearInterval(id);
   }, [profile, runAnalysis]);
 
-  const totalCapitalUsd = snapshot?.mep ? (profile?.monthly_capital_ars || 0) / snapshot.mep : 0;
-  const priceByTicker = useMemo(() => new Map((snapshot?.quotes || []).map(q => [q.ticker, q.price_usd])), [snapshot]);
-  const positionsLive = useMemo(() => positions.map(p => {
-    const cur = priceByTicker.get(p.ticker) || 0;
-    const pnl_usd = cur ? (cur - Number(p.entry_price_usd)) * Number(p.quantity) : 0;
-    const pnl_pct = cur ? (cur / Number(p.entry_price_usd) - 1) * 100 : 0;
-    return { ...p, current_price_usd: cur, pnl_usd, pnl_pct };
-  }), [positions, priceByTicker]);
+  // --- Live derived data ---
+  const ccl = snapshot?.ccl || 0;
+  // Fallback: MEP if CCL missing. Then localStorage.
+  const cclEffective = ccl > 0 ? ccl : (snapshot?.mep || cachedCcl?.value || 0);
+  const cclSource: "live" | "mep" | "cache" | "none" =
+    ccl > 0 ? "live" : snapshot?.mep ? "mep" : cachedCcl ? "cache" : "none";
+
+  // positions live (from store)
+  const positionsLive = usePositionsLive(positions);
   const totalPnlUsd = positionsLive.reduce((a, p) => a + (p.current_price_usd ? p.pnl_usd : 0), 0);
   const totalCostUsd = positionsLive.reduce((a, p) => a + Number(p.entry_price_usd) * Number(p.quantity), 0);
   const totalPnlPct = totalCostUsd ? (totalPnlUsd / totalCostUsd) * 100 : 0;
 
   // alerts SL/TP
-  const assetByTicker = useMemo(() => new Map(assets.map(a => [a.ticker, a])), [assets]);
+  const assetByTicker = useMemo(() => new Map(assets.map((a) => [a.ticker, a])), [assets]);
   const alerts = useMemo(() => {
     const list: Array<{ id: string; ticker: string; kind: "TP" | "SL" | "OK"; entry: number; current: number; pnl_pct: number; threshold_pct: number; distance_pct: number }> = [];
     for (const p of positionsLive) {
@@ -212,7 +276,7 @@ function Dashboard() {
     list.sort((a, b) => (a.kind === "OK" ? 1 : 0) - (b.kind === "OK" ? 1 : 0));
     return list;
   }, [positionsLive, assetByTicker]);
-  const triggeredCount = alerts.filter(a => a.kind !== "OK").length;
+  const triggeredCount = alerts.filter((a) => a.kind !== "OK").length;
   const notifiedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     for (const a of alerts) {
@@ -243,7 +307,7 @@ function Dashboard() {
     const q = histSearch.trim().toUpperCase();
     const from = histFrom ? new Date(histFrom).getTime() : 0;
     const to = histTo ? new Date(histTo).getTime() + 86400000 : Infinity;
-    return history.filter(h => {
+    return history.filter((h) => {
       if (q && !h.ticker.includes(q)) return false;
       if (histStatus !== "all" && h.status !== histStatus) return false;
       const t = new Date(h.entry_date).getTime();
@@ -254,7 +318,7 @@ function Dashboard() {
 
   // chat
   const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([
-    { role: "assistant", content: "Hola 👋 Soy Oráculo. Preguntame sobre tu cartera, MEP/CCL, o cualquier ticker. (No es asesoramiento financiero)" },
+    { role: "assistant", content: "Hola 👋 Soy Oráculo. Preguntame sobre cualquier ticker, MEP/CCL o el contexto de mercado. (No es asesoramiento financiero)" },
   ]);
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
@@ -269,49 +333,81 @@ function Dashboard() {
       const res = await fnChat({
         data: {
           messages: next.slice(-20),
-          context: snapshot ? { mep: snapshot.mep, ccl: snapshot.ccl, quotes: snapshot.quotes.map(q => ({ ticker: q.ticker, price_usd: q.price_usd, change_pct: q.change_pct })) } : undefined,
+          context: snapshot ? { mep: snapshot.mep, ccl: snapshot.ccl, quotes: snapshot.quotes.map((q) => ({ ticker: q.ticker, price_usd: q.price_usd, change_pct: q.change_pct })) } : undefined,
         },
       });
-      setChatMsgs(m => [...m, { role: "assistant", content: res.reply }]);
+      setChatMsgs((m) => [...m, { role: "assistant", content: res.reply }]);
     } catch (e) {
       toast.error("Error chat: " + (e as Error).message);
-      setChatMsgs(m => [...m, { role: "assistant", content: "⚠️ " + (e as Error).message }]);
+      setChatMsgs((m) => [...m, { role: "assistant", content: "⚠️ " + (e as Error).message }]);
     } finally { setChatSending(false); }
   };
 
-  // ----- Opportunities (auto-sorted) -----
+  // ----- Opportunities (auto-sorted, filterable) -----
   const opportunities = useMemo(() => {
-    const portfolioTickers = new Set(assets.map(a => a.ticker));
-    const allTickers = new Set([...portfolioTickers, ...(snapshot?.quotes.map(q => q.ticker) || [])]);
-    const sigByTicker = new Map(analysis?.assets.map(s => [s.ticker, s]) || []);
-    return Array.from(allTickers).map(t => {
-      const q = snapshot?.quotes.find(x => x.ticker === t);
-      const sig = sigByTicker.get(t);
-      const inPortfolio = portfolioTickers.has(t);
-      return {
-        ticker: t,
-        name: TICKER_NAMES[t] || assets.find(a => a.ticker === t)?.name || t,
-        price_usd: q?.price_usd || 0,
-        change_pct: q?.change_pct || 0,
-        sig,
-        inPortfolio,
-        prob: sig?.probability_pct ?? 0,
-      };
-    }).sort((a, b) => b.prob - a.prob);
-  }, [assets, snapshot, analysis]);
+    const sigByTicker = new Map(analysis?.assets.map((s) => [s.ticker, s]) || []);
+    const q = tickerSearch.trim().toUpperCase();
+    return TICKER_CATALOG
+      .filter((t) => categoryFilter === "all" || t.category === categoryFilter)
+      .filter((t) => !q || t.symbol.includes(q) || t.name.toUpperCase().includes(q))
+      .map((t) => {
+        const sig = sigByTicker.get(t.symbol);
+        return {
+          ticker: t.symbol,
+          name: t.name,
+          category: t.category,
+          sig,
+          prob: sig?.probability_pct ?? 0,
+          hasSignal: !!sig,
+        };
+      })
+      .sort((a, b) => {
+        if (a.hasSignal !== b.hasSignal) return a.hasSignal ? -1 : 1;
+        return b.prob - a.prob;
+      });
+  }, [analysis, categoryFilter, tickerSearch]);
 
-  const topPick = opportunities.find(o => o.sig);
-  const ccl = snapshot?.ccl || 0;
-  const cclState: "ok" | "loading" | "fail" = ccl > 0 ? "ok" : snapshot ? "fail" : "loading";
+  const visibleOpportunities = showAll ? opportunities : opportunities.slice(0, visibleCount);
+  const topPick = opportunities.find((o) => o.sig);
 
   if (authLoading || !profile) {
     return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Cargando...</div>;
   }
 
-  const minsAgo = analysisAt ? Math.max(0, Math.floor((now - analysisAt) / 60000)) : null;
-  const minsToNext = analysisAt ? Math.max(0, ANALYSIS_INTERVAL_MIN - (minsAgo || 0)) : ANALYSIS_INTERVAL_MIN;
+  // ===== Metrics =====
+  const score = analysis ? Math.round(analysis.market_score) : 0;
+  const cclMinsAgo = cachedCcl ? Math.max(0, Math.floor((Date.now() - cachedCcl.ts) / 60000)) : null;
+  const marketStateLabel = (() => {
+    if (!snapshot) return { dot: "bg-muted-foreground", text: "—", sub: "Cargando" };
+    if (snapshot.is_open) {
+      const closeAt = snapshot.next_close ? new Date(snapshot.next_close).getTime() : 0;
+      const diffMs = Math.max(0, closeAt - Date.now());
+      const h = Math.floor(diffMs / 3600000);
+      const m = Math.floor((diffMs % 3600000) / 60000);
+      return { dot: "bg-success animate-pulse", text: "Abierto", sub: closeAt ? `Cierra en ${h}h ${m}m` : "NYSE en vivo" };
+    }
+    const openAt = snapshot.next_open ? new Date(snapshot.next_open).getTime() : 0;
+    const diffMs = Math.max(0, openAt - Date.now());
+    const h = Math.floor(diffMs / 3600000);
+    return { dot: "bg-muted-foreground", text: "Cerrado", sub: openAt ? `Abre en ~${h}h` : "Fuera de horario" };
+  })();
+
+  const secsUntilNext = (() => {
+    if (!analysisAt) return loadingAi ? 0 : ANALYSIS_INTERVAL_MIN * 60;
+    const elapsed = Math.floor((now - analysisAt) / 1000);
+    return Math.max(0, ANALYSIS_INTERVAL_MIN * 60 - elapsed);
+  })();
+  const countdownLabel = `${Math.floor(secsUntilNext / 60)}:${String(secsUntilNext % 60).padStart(2, "0")}`;
+
+  const cclDisplay = (() => {
+    if (cclSource === "live") return { value: ars(cclEffective), sub: snapshot ? `Dólar CCL · ${timeAgo(snapshot.fx_updated_at)}` : "" };
+    if (cclSource === "mep") return { value: ars(cclEffective), sub: "Usando MEP como fallback" };
+    if (cclSource === "cache" && cachedCcl) return { value: ars(cachedCcl.value), sub: `CCL no disponible · último hace ${cclMinsAgo}m` };
+    return { value: "Reintentando…", sub: "Sin red" };
+  })();
 
   return (
+    <TooltipProvider>
     <div className="min-h-screen bg-glow">
       <header className="border-b bg-background/80 backdrop-blur sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-4">
@@ -332,17 +428,50 @@ function Dashboard() {
       </header>
 
       <main className="max-w-7xl mx-auto p-4 space-y-6">
+        {/* ===== METRICS (sin Capital) ===== */}
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <MetricCard label="Capital mensual" value={ars(profile.monthly_capital_ars)} sub={`≈ ${usd(totalCapitalUsd)}`} />
-          <MetricCard label="MEP" value={snapshot?.mep ? ars(snapshot.mep) : "—"} sub="ArgentinaDatos" />
-          <MetricCard label="CCL" value={ccl ? ars(ccl) : cclState === "loading" ? "Calculando…" : "Sin CCL"} sub={snapshot ? timeAgo(snapshot.fx_updated_at) : ""} />
-          <MetricCard label="Score IA" value={analysis ? `${Math.round(analysis.market_score)}/100` : "—"} sub={analysis?.market_score_label || (loadingAi ? "Analizando…" : "Pendiente")} highlight />
+          <div className={`bg-card border rounded-xl p-4 shadow-card ${analysis ? scoreColor(score) : ""}`}>
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">Score del mercado</div>
+            <div className="text-2xl md:text-3xl font-display font-bold mt-1" data-mono>
+              {analysis ? `${score}/100` : "—"}
+            </div>
+            <div className="text-xs mt-1 font-medium">
+              {analysis?.market_score_label || (loadingAi ? "Analizando…" : "Pendiente")}
+            </div>
+          </div>
+
+          <div className="bg-card border rounded-xl p-4 shadow-card">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">Dólar CCL</div>
+            <div className="text-2xl md:text-3xl font-display font-bold mt-1" data-mono>{cclDisplay.value}</div>
+            <div className="text-xs text-muted-foreground mt-1">{cclDisplay.sub}</div>
+          </div>
+
+          <div className="bg-card border rounded-xl p-4 shadow-card">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">Estado del mercado</div>
+            <div className="text-2xl md:text-3xl font-display font-bold mt-1 flex items-center gap-2">
+              <span className={`size-2.5 rounded-full ${marketStateLabel.dot}`} />
+              {marketStateLabel.text}
+            </div>
+            <div className="text-xs text-muted-foreground mt-1">{marketStateLabel.sub}</div>
+          </div>
+
+          <div className="bg-card border rounded-xl p-4 shadow-card border-primary/40 shadow-glow">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground flex items-center gap-1">
+              <Brain className="size-3" /> Próximo análisis IA
+            </div>
+            <div className="text-2xl md:text-3xl font-display font-bold mt-1 font-mono" data-mono>
+              {loadingAi ? "Ahora…" : countdownLabel}
+            </div>
+            <div className="text-xs mt-1 inline-flex items-center gap-1 text-success">
+              <span className="size-1.5 rounded-full bg-success animate-pulse" /> IA activa
+            </div>
+          </div>
         </section>
 
         <Tabs defaultValue="oportunidades" className="w-full">
-          <TabsList className="grid grid-cols-5 w-full md:w-auto md:inline-flex">
+          <TabsList className="grid grid-cols-3 md:grid-cols-6 w-full md:w-auto md:inline-flex">
             <TabsTrigger value="oportunidades" className="gap-1"><Target className="size-3" /> Oportunidades</TabsTrigger>
-            <TabsTrigger value="posiciones" className="gap-1"><TrendingUp className="size-3" /> Posiciones</TabsTrigger>
+            <TabsTrigger value="operaciones" className="gap-1"><TrendingUp className="size-3" /> Mis operaciones</TabsTrigger>
             <TabsTrigger value="alertas" className="gap-1">
               <Bell className="size-3" /> Alertas
               {triggeredCount > 0 && (
@@ -351,9 +480,12 @@ function Dashboard() {
             </TabsTrigger>
             <TabsTrigger value="chat" className="gap-1"><MessageSquare className="size-3" /> Chat IA</TabsTrigger>
             <TabsTrigger value="historial" className="gap-1"><History className="size-3" /> Historial</TabsTrigger>
+            <TabsTrigger value="crypto" className="gap-1" disabled>
+              ₿ Crypto <Badge variant="outline" className="ml-1 text-[9px] px-1 py-0">próx.</Badge>
+            </TabsTrigger>
           </TabsList>
 
-          {/* OPORTUNIDADES */}
+          {/* ===== OPORTUNIDADES ===== */}
           <TabsContent value="oportunidades" className="space-y-4 mt-4">
             {/* Banner top recommendation */}
             {topPick?.sig && (
@@ -361,41 +493,52 @@ function Dashboard() {
                 <div className="flex items-start gap-4 flex-wrap">
                   <div className="text-4xl">🎯</div>
                   <div className="flex-1 min-w-[240px]">
-                    <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1">El Oráculo recomienda</div>
+                    <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Mayor oportunidad ahora</div>
                     <div className="flex items-center gap-3 flex-wrap">
                       <h2 className="text-2xl md:text-3xl font-display font-bold">
                         {topPick.sig.signal} {topPick.ticker}
                       </h2>
                       <SignalPill signal={topPick.sig.signal} large />
+                      <span className="text-base">· {topPick.sig.probability_pct}% prob · {pct(topPick.sig.estimated_return_pct)} est.</span>
                     </div>
                     <p className="text-sm mt-2 leading-relaxed max-w-3xl">{topPick.sig.action_reason}</p>
-                    <div className="mt-3 flex items-center gap-4 text-xs flex-wrap">
-                      <span>Probabilidad: <strong className="text-success text-base">{topPick.sig.probability_pct}%</strong></span>
-                      <span>Retorno estimado: <strong>{pct(topPick.sig.estimated_return_pct)}</strong> · {topPick.sig.horizon}</span>
-                      <span>Riesgo: <strong className={riskColor(topPick.sig.risk_level)}>{topPick.sig.risk_level}</strong></span>
-                    </div>
                   </div>
                 </div>
               </section>
             )}
 
-            {/* Status bar */}
+            {/* Status bar + filters */}
             <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
               <Brain className="size-3.5 text-primary" />
-              {loadingAi && !analysis ? (
-                <span>Oráculo analizando el mercado…</span>
-              ) : analysisAt ? (
-                <span>
-                  Análisis IA actualizado hace {minsAgo === 0 ? "menos de 1" : minsAgo} min ·
-                  próximo análisis en {minsToNext} min
-                </span>
-              ) : (
-                <span>Esperando precios para analizar…</span>
-              )}
-              <Button onClick={() => { refreshSnap(); runAnalysis(); }} disabled={loadingAi || !snapshot} variant="ghost" size="sm" className="ml-auto h-7">
-                <RefreshCw className={`size-3.5 mr-1 ${loadingAi ? "animate-spin" : ""}`} />
-                Actualizar ahora
-              </Button>
+              {loadingAi && !analysis ? <span>Oráculo analizando el mercado…</span>
+              : analysisAt ? (
+                <span>🔥 Mejores oportunidades · actualizado {timeAgo(new Date(analysisAt).toISOString())}</span>
+              ) : <span>Esperando precios para analizar…</span>}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button onClick={() => { refreshSnap(); runAnalysis(); }} disabled={loadingAi || !snapshot} variant="ghost" size="sm" className="ml-auto h-7">
+                    <RefreshCw className={`size-3.5 mr-1 ${loadingAi ? "animate-spin" : ""}`} />
+                    Actualizar análisis
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>El análisis se actualiza automáticamente cada {ANALYSIS_INTERVAL_MIN} minutos</TooltipContent>
+              </Tooltip>
+            </div>
+
+            {/* Category pills + search */}
+            <div className="flex flex-wrap gap-2 items-center">
+              <CategoryPill active={categoryFilter === "all"} onClick={() => setCategoryFilter("all")}>Todos</CategoryPill>
+              <CategoryPill active={categoryFilter === "tech"} onClick={() => setCategoryFilter("tech")}>CEDEARs Tech</CategoryPill>
+              <CategoryPill active={categoryFilter === "arg"} onClick={() => setCategoryFilter("arg")}>Argentina</CategoryPill>
+              <CategoryPill active={categoryFilter === "fin"} onClick={() => setCategoryFilter("fin")}>Finanzas</CategoryPill>
+              <CategoryPill active={categoryFilter === "energy"} onClick={() => setCategoryFilter("energy")}>Energía</CategoryPill>
+              <CategoryPill active={categoryFilter === "etf"} onClick={() => setCategoryFilter("etf")}>ETFs</CategoryPill>
+              <CategoryPill active={categoryFilter === "health"} onClick={() => setCategoryFilter("health")}>Salud</CategoryPill>
+              <CategoryPill active={categoryFilter === "consumer"} onClick={() => setCategoryFilter("consumer")}>Consumo</CategoryPill>
+              <div className="relative ml-auto">
+                <Search className="size-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <Input className="pl-7 h-8 text-xs w-56" placeholder="Buscar ticker o empresa…" value={tickerSearch} onChange={(e) => setTickerSearch(e.target.value)} />
+              </div>
             </div>
 
             {analysis?.market_context && (
@@ -405,84 +548,47 @@ function Dashboard() {
               </section>
             )}
 
-            {/* Cards list sorted by probability */}
             <section className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h2 className="font-display font-semibold flex items-center gap-2">🔥 Mejores oportunidades ahora</h2>
-                <span className="text-xs text-muted-foreground">{opportunities.length} activos · ordenados por probabilidad</span>
-              </div>
+              {opportunities.length === 0 && (
+                <>
+                  <Skeleton className="h-24 w-full" />
+                  <Skeleton className="h-24 w-full" />
+                  <Skeleton className="h-24 w-full" />
+                </>
+              )}
 
-              {opportunities.length === 0 && <Skeleton className="h-32 w-full" />}
+              {visibleOpportunities.map((o, idx) => (
+                <OpportunityCard
+                  key={o.ticker}
+                  ticker={o.ticker}
+                  name={o.name}
+                  category={o.category}
+                  sig={o.sig}
+                  ccl={cclEffective}
+                  highlight={idx === 0 && !!o.sig}
+                  expanded={expandedTicker === o.ticker}
+                  onToggle={() => setExpandedTicker((cur) => cur === o.ticker ? null : o.ticker)}
+                />
+              ))}
 
-              {opportunities.map((o, idx) => {
-                const priceArs = o.price_usd && cclState === "ok" ? o.price_usd * ccl : 0;
-                const arsLabel = priceArs ? ars(priceArs)
-                  : cclState === "loading" ? "Calculando ARS…"
-                  : `Sin CCL${snapshot ? ` · hace ${timeAgo(snapshot.fx_updated_at)}` : ""}`;
-                const prob = o.sig?.probability_pct ?? 0;
-                return (
-                  <article key={o.ticker} className={`bg-card border rounded-xl p-4 shadow-card ${idx === 0 && o.sig ? "border-primary/40 shadow-glow" : ""}`}>
-                    <div className="flex items-start justify-between gap-3 flex-wrap">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-display font-bold text-xl">{o.ticker}</span>
-                          <span className="text-sm text-muted-foreground">{o.name}</span>
-                          {o.inPortfolio && <Badge variant="outline" className="text-[10px]">en cartera</Badge>}
-                        </div>
-                        <div className="mt-1 text-sm font-mono flex items-center gap-3 flex-wrap" data-mono>
-                          {o.price_usd ? usd(o.price_usd) : <Skeleton className="h-4 w-16 inline-block" />}
-                          <span className="text-muted-foreground">·</span>
-                          <span className="text-muted-foreground">{arsLabel}</span>
-                          {o.price_usd ? (
-                            <span className={`inline-flex items-center gap-1 ${o.change_pct >= 0 ? "text-success" : "text-destructive"}`}>
-                              {o.change_pct >= 0 ? <TrendingUp className="size-3" /> : <TrendingDown className="size-3" />}
-                              {pct(o.change_pct)}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        {o.sig ? <SignalPill signal={o.sig.signal} large /> : <Skeleton className="h-8 w-24" />}
-                      </div>
-                    </div>
-
-                    {o.sig ? (
-                      <div className="mt-4 grid md:grid-cols-[1fr_auto] gap-4 items-start">
-                        <div>
-                          <div className="flex items-center gap-3 mb-2">
-                            <span className="text-3xl font-display font-bold text-success leading-none">{prob}%</span>
-                            <div className="flex-1">
-                              <div className="text-xs text-muted-foreground mb-1">Probabilidad de ganancia</div>
-                              <div className="h-2 rounded-full bg-secondary overflow-hidden">
-                                <div className="h-full bg-success transition-all" style={{ width: `${Math.min(100, prob)}%` }} />
-                              </div>
-                            </div>
-                            <span className={`text-xs font-semibold ${riskColor(o.sig.risk_level)}`}>{o.sig.risk_level}</span>
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            Retorno estimado: <span className="text-foreground font-semibold">{pct(o.sig.estimated_return_pct)}</span> · {o.sig.horizon}
-                          </div>
-                          <p className="text-sm mt-2 leading-relaxed"><span className="text-muted-foreground text-xs">Por qué: </span>{o.sig.action_reason}</p>
-                          {o.sig.risk_note && <p className="text-xs text-muted-foreground mt-1 italic">{o.sig.risk_note}</p>}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-3 space-y-2">
-                        <Skeleton className="h-3 w-full" />
-                        <Skeleton className="h-3 w-3/4" />
-                      </div>
-                    )}
-                  </article>
-                );
-              })}
+              {!showAll && opportunities.length > visibleCount && (
+                <div className="flex justify-center gap-2 pt-2">
+                  <Button variant="outline" size="sm" onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}>
+                    Cargar más ({opportunities.length - visibleCount} restantes)
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setShowAll(true)}>
+                    Ver todos ({opportunities.length})
+                  </Button>
+                </div>
+              )}
             </section>
           </TabsContent>
 
-          {/* POSICIONES */}
-          <TabsContent value="posiciones" className="mt-4">
+          {/* ===== MIS OPERACIONES ===== */}
+          <TabsContent value="operaciones" className="mt-4">
             <section className="bg-card border rounded-xl shadow-card overflow-hidden">
               <div className="px-4 py-3 border-b flex items-center justify-between gap-3">
-                <h2 className="font-display font-semibold">Posiciones abiertas</h2>
+                <h2 className="font-display font-semibold">Mis operaciones abiertas</h2>
                 <div className="flex items-center gap-3 text-xs">
                   <span className="text-muted-foreground">{positions.length} abiertas</span>
                   {positions.length > 0 && (
@@ -494,7 +600,7 @@ function Dashboard() {
               </div>
               {positions.length === 0 ? (
                 <div className="text-center text-sm text-muted-foreground py-8">
-                  Sin posiciones abiertas. El Oráculo es una herramienta de análisis: vos ejecutás las operaciones en tu broker.
+                  Sin operaciones abiertas. El Oráculo es una herramienta de análisis: vos ejecutás las operaciones en tu broker.
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -511,7 +617,7 @@ function Dashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {positionsLive.map(p => {
+                      {positionsLive.map((p) => {
                         const positive = p.pnl_usd >= 0;
                         return (
                           <tr key={p.id} className="border-b last:border-0">
@@ -544,7 +650,7 @@ function Dashboard() {
             </section>
           </TabsContent>
 
-          {/* ALERTAS */}
+          {/* ===== ALERTAS ===== */}
           <TabsContent value="alertas" className="mt-4">
             <section className="bg-card border rounded-xl shadow-card overflow-hidden">
               <div className="px-4 py-3 border-b flex items-center justify-between">
@@ -572,7 +678,7 @@ function Dashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {alerts.map(a => {
+                      {alerts.map((a) => {
                         const cfg = assetByTicker.get(a.ticker);
                         const colorRow = a.kind === "TP" ? "bg-success/10" : a.kind === "SL" ? "bg-destructive/10" : "";
                         return (
@@ -605,7 +711,7 @@ function Dashboard() {
             </section>
           </TabsContent>
 
-          {/* CHAT */}
+          {/* ===== CHAT ===== */}
           <TabsContent value="chat" className="mt-4">
             <section className="bg-card border rounded-xl shadow-card flex flex-col h-[60vh] min-h-[420px] overflow-hidden">
               <div className="px-4 py-3 border-b flex items-center gap-2">
@@ -635,7 +741,7 @@ function Dashboard() {
             </section>
           </TabsContent>
 
-          {/* HISTORIAL */}
+          {/* ===== HISTORIAL ===== */}
           <TabsContent value="historial" className="mt-4">
             <section className="bg-card border rounded-xl shadow-card overflow-hidden">
               <div className="px-4 py-3 border-b">
@@ -669,7 +775,7 @@ function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredHistory.map(h => {
+                    {filteredHistory.map((h) => {
                       const closed = h.status === "closed";
                       const positive = (h.pnl_usd || 0) >= 0;
                       return (
@@ -705,15 +811,132 @@ function Dashboard() {
         </p>
       </main>
     </div>
+    </TooltipProvider>
   );
 }
 
-function MetricCard({ label, value, sub, highlight }: { label: string; value: string; sub?: string; highlight?: boolean }) {
+// ============ Subcomponents ============
+
+function CategoryPill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <div className={`bg-card border rounded-xl p-4 shadow-card ${highlight ? "border-primary/40 shadow-glow" : ""}`}>
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="text-xl md:text-2xl font-display font-bold mt-1" data-mono>{value}</div>
-      {sub && <div className="text-xs text-muted-foreground mt-1">{sub}</div>}
-    </div>
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${
+        active ? "bg-primary text-primary-foreground border-primary" : "bg-card border-border hover:border-primary/40 text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
+
+type OpportunityCardProps = {
+  ticker: string;
+  name: string;
+  category: TickerCategory;
+  sig?: AssetSignal;
+  ccl: number;
+  highlight: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+};
+
+const OpportunityCard = memoCard(function OpportunityCardImpl({
+  ticker, name, category, sig, ccl, highlight, expanded, onToggle,
+}: OpportunityCardProps) {
+  const prob = sig?.probability_pct ?? 0;
+  const tick = usePriceFor(ticker);
+  const volumeBadge = (() => {
+    const ch = Math.abs(tick?.change_pct || 0);
+    if (ch >= 3) return { label: "Alto", cls: "bg-success/20 text-success border-success/40" };
+    if (ch >= 1) return { label: "Normal", cls: "bg-info/20 text-info border-info/40" };
+    return { label: "Bajo", cls: "bg-muted text-muted-foreground border-border" };
+  })();
+
+  return (
+    <article className={`bg-card border rounded-xl shadow-card transition-all ${highlight ? "border-primary/40 shadow-glow" : ""}`}>
+      <button onClick={onToggle} className="w-full text-left p-4 flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-display font-bold text-xl">{ticker}</span>
+            <span className="text-sm text-muted-foreground">{name}</span>
+            <Badge variant="outline" className="text-[10px]">{CATEGORY_LABELS[category]}</Badge>
+            <Badge variant="outline" className={`text-[10px] ${volumeBadge.cls}`}>Vol. {volumeBadge.label}</Badge>
+          </div>
+          <div className="mt-1 text-sm">
+            <PriceCell symbol={ticker} ccl={ccl} />
+          </div>
+        </div>
+        <div className="text-right flex flex-col items-end gap-1">
+          {sig ? (
+            <>
+              <SignalPill signal={sig.signal} large />
+              <span className="text-xs font-bold text-success">{prob}% prob.</span>
+            </>
+          ) : (
+            <Skeleton className="h-8 w-24" />
+          )}
+        </div>
+        {sig && (
+          <span className="ml-2 text-muted-foreground self-center">
+            {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+          </span>
+        )}
+      </button>
+
+      {sig && expanded && (
+        <div className="px-4 pb-4 border-t pt-4">
+          <div className="flex items-center gap-3 mb-3">
+            <span className="text-3xl font-display font-bold text-success leading-none">{prob}%</span>
+            <div className="flex-1">
+              <div className="text-xs text-muted-foreground mb-1">Probabilidad de ganancia</div>
+              <div className="h-2 rounded-full bg-secondary overflow-hidden">
+                <div className="h-full bg-success transition-all" style={{ width: `${Math.min(100, prob)}%` }} />
+              </div>
+            </div>
+            <span className={`text-xs font-semibold ${riskColor(sig.risk_level)}`}>Riesgo {sig.risk_level}</span>
+          </div>
+          <div className="text-xs text-muted-foreground">
+            Retorno estimado: <span className="text-foreground font-semibold">{pct(sig.estimated_return_pct)}</span> · {sig.horizon}
+          </div>
+          <p className="text-sm mt-2 leading-relaxed">
+            <span className="text-muted-foreground text-xs">Por qué: </span>{sig.action_reason}
+          </p>
+          {sig.risk_note && <p className="text-xs text-muted-foreground mt-1 italic">{sig.risk_note}</p>}
+        </div>
+      )}
+    </article>
+  );
+});
+
+// React.memo wrapper that compares relevant props (price isolated via store).
+function memoCard<P extends OpportunityCardProps>(Component: React.FC<P>) {
+  return (function Memoized(props: P) {
+    const last = useRef<P | null>(null);
+    if (!last.current) { last.current = props; return <Component {...props} />; }
+    const prev = last.current;
+    const same =
+      prev.ticker === props.ticker &&
+      prev.sig === props.sig &&
+      prev.ccl === props.ccl &&
+      prev.highlight === props.highlight &&
+      prev.expanded === props.expanded &&
+      prev.onToggle === props.onToggle;
+    if (!same) last.current = props;
+    return <Component {...(same ? prev : props)} />;
+  });
+}
+
+// Hook: live positions PnL using store, so price ticks recompute without re-fetch.
+function usePositionsLive(positions: Position[]) {
+  const bySymbol = usePrices((s) => s.bySymbol);
+  return useMemo(() => positions.map((p) => {
+    const cur = bySymbol[p.ticker]?.price || 0;
+    const pnl_usd = cur ? (cur - Number(p.entry_price_usd)) * Number(p.quantity) : 0;
+    const pnl_pct = cur ? (cur / Number(p.entry_price_usd) - 1) * 100 : 0;
+    return { ...p, current_price_usd: cur, pnl_usd, pnl_pct };
+  }), [positions, bySymbol]);
+}
+
+// silence unused warnings for symbols we keep imported intentionally
+void TICKER_NAME; void TICKER_CATEGORY;
