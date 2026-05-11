@@ -122,8 +122,8 @@ async function fetchBtcDominance(): Promise<number | null> {
 export const getCryptoSnapshot = createServerFn({ method: "GET" }).handler(
   async (): Promise<CryptoSnapshot> => {
     const [quotes, bars, fg, dom] = await Promise.all([
-      fetchCryptoQuotes().catch(() => ({})),
-      fetchCryptoBars().catch(() => ({})),
+      fetchCryptoQuotes().catch(() => ({} as Record<string, { ap?: number; bp?: number; t?: string }>)),
+      fetchCryptoBars().catch(() => ({} as Record<string, { o?: number; c?: number; v?: number }>)),
       fetchFearGreed(),
       fetchBtcDominance(),
     ]);
@@ -158,8 +158,8 @@ export const analyzeCrypto = createServerFn({ method: "POST" }).handler(
     if (!apiKey) throw new Error("LOVABLE_API_KEY no configurada");
     const snap = await (async () => {
       const [quotes, bars, fg, dom] = await Promise.all([
-        fetchCryptoQuotes().catch(() => ({})),
-        fetchCryptoBars().catch(() => ({})),
+        fetchCryptoQuotes().catch(() => ({} as Record<string, { ap?: number; bp?: number; t?: string }>)),
+        fetchCryptoBars().catch(() => ({} as Record<string, { o?: number; c?: number; v?: number }>)),
         fetchFearGreed(),
         fetchBtcDominance(),
       ]);
