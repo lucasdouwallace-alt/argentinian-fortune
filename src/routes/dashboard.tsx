@@ -597,21 +597,15 @@ function Dashboard() {
                     <div className="flex items-center gap-3 flex-wrap">
                       <h2 className="text-2xl md:text-3xl font-display font-bold">
                         {topPick.sig.signal} {topPick.ticker}
-                        {topPick.sig.entry_price_usd > 0 && (
-                          <span className="text-muted-foreground"> a </span>
-                        )}
-                        {topPick.sig.entry_price_usd > 0 && (
-                          <span className="font-mono" data-mono>{usd(topPick.sig.entry_price_usd)}</span>
-                        )}
                       </h2>
                       <SignalPill signal={topPick.sig.signal} large />
                     </div>
                     <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm font-mono" data-mono>
-                      {topPick.sig.stop_price_usd > 0 && (
-                        <span><span className="text-muted-foreground">Stop:</span> <span className="text-destructive font-bold">{usd(topPick.sig.stop_price_usd)}</span></span>
+                      {topPick.sig.stop_loss_pct > 0 && (
+                        <span><span className="text-muted-foreground">Stop:</span> <span className="text-destructive font-bold">-{topPick.sig.stop_loss_pct}%</span></span>
                       )}
-                      {topPick.sig.target_price_usd > 0 && (
-                        <span><span className="text-muted-foreground">Target:</span> <span className="text-success font-bold">{usd(topPick.sig.target_price_usd)}</span></span>
+                      {topPick.sig.take_profit_pct > 0 && (
+                        <span><span className="text-muted-foreground">Target:</span> <span className="text-success font-bold">+{topPick.sig.take_profit_pct}%</span></span>
                       )}
                       <span><span className="text-muted-foreground">Plazo:</span> <span className="font-bold">{topPick.sig.horizon}</span></span>
                       <span><span className="text-muted-foreground">Probabilidad:</span> <span className="font-bold">{topPick.sig.probability_pct}%</span></span>
