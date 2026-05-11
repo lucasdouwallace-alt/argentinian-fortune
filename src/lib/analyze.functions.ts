@@ -62,10 +62,14 @@ Estado del mercado: ${data.market_open ? "abierto" : "cerrado"}
 Capital del usuario: ARS ${data.capital_ars.toLocaleString("es-AR")} (~USD ${(data.capital_ars / (data.mep || 1)).toFixed(0)})
 Posiciones abiertas: ${data.positions.length === 0 ? "ninguna" : data.positions.map(p => `${p.ticker} entry $${p.entry_price_usd} pnl ${p.pnl_pct.toFixed(2)}%`).join("; ")}
 
-Para cada activo dame la orden EXACTA con precios concretos (entry, stop, target en USD).
-- Solo incluí activos con probability_pct > 60.
+Para cada activo dame la orden con PORCENTAJES (no precios USD exactos: el usuario opera CEDEARs en BYMA cuyo precio difiere de NYSE).
+- Solo activos con probability_pct > 60.
 - Ordenados de MAYOR a MENOR probability_pct.
 - Máximo 10 activos.
+- stop_loss_pct y take_profit_pct son siempre POSITIVOS (la dirección la define el campo signal).
+- horizon_days entre 3 y 10 (apuntá a ~5 días, una semana).
+- Para COMPRAR: entry_offset_pct = 0.
+- Para ESPERAR: entry_offset_pct = % desde precio actual al que conviene entrar (negativo si esperás pullback, positivo si breakout).
 
 Respondé SOLO JSON válido sin texto extra ni backticks:
 {
@@ -79,12 +83,16 @@ Respondé SOLO JSON válido sin texto extra ni backticks:
       "signal":"COMPRAR|VENDER|ESPERAR",
       "confidence":60-92,
       "probability_pct":60-92,
-      "estimated_return_pct": número (positivo o negativo),
-      "horizon":"ej: 2-3 semanas",
+      "estimated_return_pct": número,
+      "horizon":"ej: 5 días hábiles",
+      "horizon_days": 5,
       "risk_level":"Bajo|Medio|Alto",
-      "entry_price_usd": número (precio de entrada exacto en USD),
-      "stop_price_usd": número (stop loss exacto en USD),
-      "target_price_usd": número (take profit exacto en USD),
+      "stop_loss_pct": número positivo (ej 8 = -8%),
+      "take_profit_pct": número positivo (ej 18 = +18%),
+      "entry_offset_pct": número (0 si COMPRAR ya, negativo si esperás pullback),
+      "entry_price_usd": número (precio NYSE de referencia, opcional),
+      "stop_price_usd": 0,
+      "target_price_usd": 0,
       "action_reason":"máximo 15 palabras, una sola razón concreta",
       "risk_note":"breve"
     }
@@ -121,14 +129,23 @@ Respondé SOLO JSON válido sin texto extra ni backticks:
     if (start >= 0 && end > start) text = text.slice(start, end + 1);
     try {
       const parsed = JSON.parse(text) as MarketAnalysis;
-      // Defaults defensivos por si la IA omite algún precio.
+      // Defaults defensivos.
       parsed.assets = (parsed.assets || []).map((a) => {
         const px = Number(a.entry_price_usd) || 0;
+        const sl = Number(a.stop_loss_pct) || 8;
+        const tp = Number(a.take_profit_pct) || 15;
+        const offset = Number(a.entry_offset_pct) || 0;
+        const days = Number(a.horizon_days) || 5;
         return {
           ...a,
+          stop_loss_pct: Math.abs(sl),
+          take_profit_pct: Math.abs(tp),
+          entry_offset_pct: offset,
+          horizon_days: days,
+          horizon: a.horizon || `${days} días hábiles`,
           entry_price_usd: px,
-          stop_price_usd: Number(a.stop_price_usd) || (px ? +(px * 0.92).toFixed(2) : 0),
-          target_price_usd: Number(a.target_price_usd) || (px ? +(px * 1.15).toFixed(2) : 0),
+          stop_price_usd: Number(a.stop_price_usd) || (px ? +(px * (1 - Math.abs(sl) / 100)).toFixed(2) : 0),
+          target_price_usd: Number(a.target_price_usd) || (px ? +(px * (1 + Math.abs(tp) / 100)).toFixed(2) : 0),
         };
       });
       parsed.assets.sort((a, b) => (b.probability_pct || 0) - (a.probability_pct || 0));
