@@ -429,9 +429,26 @@ function Dashboard() {
           </div>
 
           <div className="bg-card border rounded-xl p-4 shadow-card">
-            <div className="text-xs uppercase tracking-wide text-muted-foreground">Dólar CCL</div>
+            <div className="flex items-center justify-between">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">Dólar CCL</div>
+              <button
+                type="button"
+                onClick={() => { void cclState.refresh(); }}
+                disabled={cclState.loading}
+                aria-label="Refrescar CCL"
+                title="Refrescar CCL"
+                className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`size-3.5 ${cclState.loading ? "animate-spin" : ""}`} />
+              </button>
+            </div>
             <div className="text-2xl md:text-3xl font-display font-bold mt-1" data-mono>{cclDisplay.value}</div>
             <div className="text-xs text-muted-foreground mt-1">{cclDisplay.sub}</div>
+            {cclState.consecutiveFailures > 0 && (
+              <div className="text-[10px] text-destructive mt-1">
+                {cclState.consecutiveFailures} fallo(s) · próximo intento en {Math.round(cclState.nextPollMs / 1000)}s
+              </div>
+            )}
           </div>
 
           <div className="bg-card border rounded-xl p-4 shadow-card">
