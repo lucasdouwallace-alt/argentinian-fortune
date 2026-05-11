@@ -116,7 +116,7 @@ function Dashboard() {
 
   // 1s tick for countdowns
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
-  useEffect(() => { setCachedCcl(readCachedCcl()); }, []);
+  
 
   // auth gate
   useEffect(() => { if (!authLoading && !user) navigate({ to: "/auth" }); }, [authLoading, user, navigate]);
