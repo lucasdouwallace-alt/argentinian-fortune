@@ -556,21 +556,38 @@ function Dashboard() {
 
           {/* ===== OPORTUNIDADES ===== */}
           <TabsContent value="oportunidades" className="space-y-4 mt-4">
-            {/* Banner top recommendation */}
+            {/* ===== ORDEN DEL DÍA ===== */}
             {topPick?.sig && (
               <section className={`bg-gradient-to-r ${bannerBg(topPick.sig.signal)} border rounded-xl p-5 shadow-card`}>
                 <div className="flex items-start gap-4 flex-wrap">
-                  <div className="text-4xl">🎯</div>
-                  <div className="flex-1 min-w-[240px]">
-                    <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Mayor oportunidad ahora</div>
+                  <div className="text-4xl">⚡</div>
+                  <div className="flex-1 min-w-[260px] space-y-2">
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground font-bold">
+                      Orden del día — El Oráculo dice
+                    </div>
                     <div className="flex items-center gap-3 flex-wrap">
                       <h2 className="text-2xl md:text-3xl font-display font-bold">
                         {topPick.sig.signal} {topPick.ticker}
+                        {topPick.sig.entry_price_usd > 0 && (
+                          <span className="text-muted-foreground"> a </span>
+                        )}
+                        {topPick.sig.entry_price_usd > 0 && (
+                          <span className="font-mono" data-mono>{usd(topPick.sig.entry_price_usd)}</span>
+                        )}
                       </h2>
                       <SignalPill signal={topPick.sig.signal} large />
-                      <span className="text-base">· {topPick.sig.probability_pct}% prob · {pct(topPick.sig.estimated_return_pct)} est.</span>
                     </div>
-                    <p className="text-sm mt-2 leading-relaxed max-w-3xl">{topPick.sig.action_reason}</p>
+                    <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm font-mono" data-mono>
+                      {topPick.sig.stop_price_usd > 0 && (
+                        <span><span className="text-muted-foreground">Stop:</span> <span className="text-destructive font-bold">{usd(topPick.sig.stop_price_usd)}</span></span>
+                      )}
+                      {topPick.sig.target_price_usd > 0 && (
+                        <span><span className="text-muted-foreground">Target:</span> <span className="text-success font-bold">{usd(topPick.sig.target_price_usd)}</span></span>
+                      )}
+                      <span><span className="text-muted-foreground">Plazo:</span> <span className="font-bold">{topPick.sig.horizon}</span></span>
+                      <span><span className="text-muted-foreground">Probabilidad:</span> <span className="font-bold">{topPick.sig.probability_pct}%</span></span>
+                    </div>
+                    <p className="text-sm leading-relaxed max-w-3xl italic">"{topPick.sig.action_reason}"</p>
                   </div>
                 </div>
               </section>
