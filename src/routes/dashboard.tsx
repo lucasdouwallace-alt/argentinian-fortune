@@ -1005,22 +1005,29 @@ const OpportunityCard = memoCard(function OpportunityCardImpl({
             </div>
             <span className={`text-xs font-semibold ${riskColor(sig.risk_level)}`}>Riesgo {sig.risk_level}</span>
           </div>
-          {(sig.entry_price_usd > 0 || sig.stop_price_usd > 0 || sig.target_price_usd > 0) && (
-            <div className="grid grid-cols-3 gap-2 mb-3 font-mono text-sm" data-mono>
-              <div className="bg-secondary/50 rounded-lg p-2">
-                <div className="text-[10px] uppercase text-muted-foreground">Entrada</div>
-                <div className="font-bold">{sig.entry_price_usd > 0 ? usd(sig.entry_price_usd) : "—"}</div>
-              </div>
+          {(sig.stop_loss_pct > 0 || sig.take_profit_pct > 0) && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3 font-mono text-sm" data-mono>
               <div className="bg-destructive/10 rounded-lg p-2">
-                <div className="text-[10px] uppercase text-muted-foreground">Stop</div>
-                <div className="font-bold text-destructive">{sig.stop_price_usd > 0 ? usd(sig.stop_price_usd) : "—"}</div>
+                <div className="text-[10px] uppercase text-muted-foreground">Stop Loss</div>
+                <div className="font-bold text-destructive">-{sig.stop_loss_pct}%</div>
               </div>
               <div className="bg-success/10 rounded-lg p-2">
-                <div className="text-[10px] uppercase text-muted-foreground">Target</div>
-                <div className="font-bold text-success">{sig.target_price_usd > 0 ? usd(sig.target_price_usd) : "—"}</div>
+                <div className="text-[10px] uppercase text-muted-foreground">Take Profit</div>
+                <div className="font-bold text-success">+{sig.take_profit_pct}%</div>
               </div>
+              <div className="bg-secondary/50 rounded-lg p-2 col-span-2 sm:col-span-1">
+                <div className="text-[10px] uppercase text-muted-foreground">Plazo</div>
+                <div className="font-bold">{sig.horizon_days || 5} días háb.</div>
+              </div>
+              {sig.signal === "ESPERAR" && sig.entry_offset_pct !== 0 && (
+                <div className="bg-warning/10 rounded-lg p-2 col-span-2 sm:col-span-3">
+                  <div className="text-[10px] uppercase text-muted-foreground">Entrar cuando se mueva</div>
+                  <div className="font-bold text-warning">{sig.entry_offset_pct > 0 ? "+" : ""}{sig.entry_offset_pct}% desde precio actual</div>
+                </div>
+              )}
             </div>
           )}
+          <BalanzCalculator sig={sig} />
           <div className="text-xs text-muted-foreground">
             Retorno estimado: <span className="text-foreground font-semibold">{pct(sig.estimated_return_pct)}</span> · {sig.horizon}
           </div>
