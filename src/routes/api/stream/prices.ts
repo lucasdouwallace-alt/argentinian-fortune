@@ -16,6 +16,30 @@ export const Route = createFileRoute("/api/stream/prices")({
           return new Response("Alpaca keys not configured", { status: 500 });
         }
 
+        // The Worker WebSocket-over-fetch upgrade only works on Cloudflare.
+        // In Node dev (vite dev), undici rejects the Upgrade header, which
+        // floods the dev server with errors. Detect non-Worker runtimes and
+        // return a no-op SSE stream so the client falls back to REST polling.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const isWorker = typeof (globalThis as any).WebSocketPair !== "undefined";
+        if (!isWorker) {
+          const enc = new TextEncoder();
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(enc.encode(`event: info\ndata: {"mode":"rest-fallback"}\n\n`));
+              // Keep the connection alive but quiet; client will use REST polling.
+            },
+          });
+          return new Response(stream, {
+            headers: {
+              "Content-Type": "text/event-stream; charset=utf-8",
+              "Cache-Control": "no-cache, no-transform",
+              "Connection": "keep-alive",
+              "X-Accel-Buffering": "no",
+            },
+          });
+        }
+
         // Cloudflare Workers WebSocket client: fetch with Upgrade header.
         const upstream = await fetch(ALPACA_WS, {
           headers: { Upgrade: "websocket" },
