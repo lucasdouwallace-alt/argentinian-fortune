@@ -16,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { usd, ars, pct, timeAgo } from "@/lib/format";
 import { toast } from "sonner";
 import { usePrices, usePriceFor } from "@/lib/pricesStore";
+import { useCcl } from "@/lib/useCcl";
 import { PriceCell } from "@/components/PriceCell";
 import {
   TICKER_CATALOG,
