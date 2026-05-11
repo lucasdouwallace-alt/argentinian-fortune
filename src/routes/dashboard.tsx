@@ -83,21 +83,6 @@ function scoreColor(score: number) {
   return "text-destructive border-destructive/40";
 }
 
-function readCachedCcl(): { value: number; ts: number } | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(CCL_CACHE_KEY);
-    if (!raw) return null;
-    const j = JSON.parse(raw);
-    if (typeof j?.value === "number" && typeof j?.ts === "number") return j;
-  } catch { /* noop */ }
-  return null;
-}
-
-function writeCachedCcl(value: number) {
-  if (typeof window === "undefined") return;
-  try { localStorage.setItem(CCL_CACHE_KEY, JSON.stringify({ value, ts: Date.now() })); } catch { /* noop */ }
-}
 
 function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
