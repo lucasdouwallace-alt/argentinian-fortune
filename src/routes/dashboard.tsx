@@ -913,6 +913,10 @@ function Dashboard() {
               <div className="px-4 py-2 text-xs text-muted-foreground border-t">{filteredHistory.length} de {history.length} operaciones</div>
             </section>
           </TabsContent>
+
+          <TabsContent value="crypto" className="mt-4">
+            <CryptoTab />
+          </TabsContent>
         </Tabs>
 
         <p className="text-xs text-muted-foreground text-center pt-4 pb-8 flex items-center justify-center gap-1">
