@@ -42,12 +42,12 @@ function Landing() {
           Datos en tiempo real · Análisis IA · 100% gratis
         </div>
         <h1 className="text-4xl md:text-6xl font-display font-bold tracking-tight leading-[1.05]">
-          Tu monitor de inversiones,<br />
-          <span className="text-primary">con cerebro propio.</span>
+          El Oráculo te dice <span className="text-primary">exactamente qué comprar</span><br />
+          y qué vender.
         </h1>
         <p className="text-lg text-muted-foreground mt-6 max-w-2xl mx-auto">
-          Precios reales de Alpaca, tipo de cambio CCL al instante y señales de compra/venta
-          generadas por IA. Para CEDEARs y ADRs argentinos.
+          No es un broker. No es un simulador. Es un vidente financiero con datos reales
+          de mercado y análisis de IA. Sin tecnicismos.
         </p>
         <div className="flex gap-3 justify-center mt-8">
           <Link to="/auth">
