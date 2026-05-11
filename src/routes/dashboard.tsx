@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import { usePrices, usePriceFor } from "@/lib/pricesStore";
 import { useCcl } from "@/lib/useCcl";
 import { PriceCell } from "@/components/PriceCell";
+import { CryptoTab } from "@/components/CryptoTab";
 import {
   TICKER_CATALOG,
   TICKER_NAME,
