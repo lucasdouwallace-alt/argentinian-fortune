@@ -160,10 +160,6 @@ function Dashboard() {
       const snap = await fetchSnapshot();
       setSnapshot(snap);
       setBulkPrices(snap.quotes);
-      if (snap.ccl > 0) {
-        writeCachedCcl(snap.ccl);
-        setCachedCcl({ value: snap.ccl, ts: Date.now() });
-      }
     } catch (e) { toast.error("Error trayendo precios: " + (e as Error).message); }
   }, [fetchSnapshot, setBulkPrices]);
 
