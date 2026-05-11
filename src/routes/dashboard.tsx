@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import { usePrices, usePriceFor } from "@/lib/pricesStore";
 import { useCcl } from "@/lib/useCcl";
 import { PriceCell } from "@/components/PriceCell";
+import { CryptoTab } from "@/components/CryptoTab";
 import {
   TICKER_CATALOG,
   TICKER_NAME,
@@ -578,8 +579,8 @@ function Dashboard() {
             </TabsTrigger>
             <TabsTrigger value="chat" className="gap-1"><MessageSquare className="size-3" /> Chat IA</TabsTrigger>
             <TabsTrigger value="historial" className="gap-1"><History className="size-3" /> Historial</TabsTrigger>
-            <TabsTrigger value="crypto" className="gap-1" disabled>
-              ₿ Crypto <Badge variant="outline" className="ml-1 text-[9px] px-1 py-0">próx.</Badge>
+            <TabsTrigger value="crypto" className="gap-1">
+              ₿ Crypto
             </TabsTrigger>
           </TabsList>
 
@@ -912,6 +913,10 @@ function Dashboard() {
               </div>
               <div className="px-4 py-2 text-xs text-muted-foreground border-t">{filteredHistory.length} de {history.length} operaciones</div>
             </section>
+          </TabsContent>
+
+          <TabsContent value="crypto" className="mt-4">
+            <CryptoTab />
           </TabsContent>
         </Tabs>
 
