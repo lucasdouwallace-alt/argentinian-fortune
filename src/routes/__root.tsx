@@ -72,14 +72,18 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
+      { title: "Oráculo · Monitor de Inversiones" },
+      { name: "description", content: "u asesor de inversiones con IA. Precios en tiempo real, señales automáticas de compra y venta." },
       { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { property: "og:title", content: "Oráculo · Monitor de Inversiones" },
+      { property: "og:description", content: "u asesor de inversiones con IA. Precios en tiempo real, señales automáticas de compra y venta." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:title", content: "Oráculo · Monitor de Inversiones" },
+      { name: "twitter:description", content: "u asesor de inversiones con IA. Precios en tiempo real, señales automáticas de compra y venta." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/8042af6e-2afd-4b14-b263-f04fab207311/id-preview-d42ef475--2c2d4d35-b61d-46f4-8fcb-66a227158b51.lovable.app-1778458778411.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/8042af6e-2afd-4b14-b263-f04fab207311/id-preview-d42ef475--2c2d4d35-b61d-46f4-8fcb-66a227158b51.lovable.app-1778458778411.png" },
     ],
     links: [
       {
