@@ -229,11 +229,8 @@ function Dashboard() {
   }, [profile, runAnalysis]);
 
   // --- Live derived data ---
-  const ccl = snapshot?.ccl || 0;
-  // Fallback: MEP if CCL missing. Then localStorage.
-  const cclEffective = ccl > 0 ? ccl : (snapshot?.mep || cachedCcl?.value || 0);
-  const cclSource: "live" | "mep" | "cache" | "none" =
-    ccl > 0 ? "live" : snapshot?.mep ? "mep" : cachedCcl ? "cache" : "none";
+  // CCL viene de useCcl (CCL primario, MEP fallback, cache localStorage).
+  const cclEffective = cclState.effective;
 
   // positions live (from store)
   const positionsLive = usePositionsLive(positions);
