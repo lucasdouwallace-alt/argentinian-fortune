@@ -16,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { usd, ars, pct, timeAgo } from "@/lib/format";
 import { toast } from "sonner";
 import { usePrices, usePriceFor } from "@/lib/pricesStore";
+import { useCcl } from "@/lib/useCcl";
 import { PriceCell } from "@/components/PriceCell";
 import {
   TICKER_CATALOG,
@@ -48,7 +49,7 @@ type CategoryFilter = "all" | TickerCategory;
 const ANALYSIS_INTERVAL_MIN = 5;
 const INITIAL_VISIBLE = 10;
 const PAGE_SIZE = 10;
-const CCL_CACHE_KEY = "oraculo:ccl_last";
+
 
 function SignalPill({ signal, large = false }: { signal: AssetSignal["signal"] | string; large?: boolean }) {
   const cfg = {
@@ -83,21 +84,6 @@ function scoreColor(score: number) {
   return "text-destructive border-destructive/40";
 }
 
-function readCachedCcl(): { value: number; ts: number } | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(CCL_CACHE_KEY);
-    if (!raw) return null;
-    const j = JSON.parse(raw);
-    if (typeof j?.value === "number" && typeof j?.ts === "number") return j;
-  } catch { /* noop */ }
-  return null;
-}
-
-function writeCachedCcl(value: number) {
-  if (typeof window === "undefined") return;
-  try { localStorage.setItem(CCL_CACHE_KEY, JSON.stringify({ value, ts: Date.now() })); } catch { /* noop */ }
-}
 
 function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
@@ -119,7 +105,7 @@ function Dashboard() {
   const [loadingAi, setLoadingAi] = useState(false);
   const [closingId, setClosingId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
-  const [cachedCcl, setCachedCcl] = useState<{ value: number; ts: number } | null>(null);
+  const cclState = useCcl();
 
   // Filters
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
@@ -130,7 +116,7 @@ function Dashboard() {
 
   // 1s tick for countdowns
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
-  useEffect(() => { setCachedCcl(readCachedCcl()); }, []);
+  
 
   // auth gate
   useEffect(() => { if (!authLoading && !user) navigate({ to: "/auth" }); }, [authLoading, user, navigate]);
@@ -174,10 +160,6 @@ function Dashboard() {
       const snap = await fetchSnapshot();
       setSnapshot(snap);
       setBulkPrices(snap.quotes);
-      if (snap.ccl > 0) {
-        writeCachedCcl(snap.ccl);
-        setCachedCcl({ value: snap.ccl, ts: Date.now() });
-      }
     } catch (e) { toast.error("Error trayendo precios: " + (e as Error).message); }
   }, [fetchSnapshot, setBulkPrices]);
 
@@ -224,14 +206,14 @@ function Dashboard() {
       }));
       const a = await fetchAnalysis({
         data: {
-          capital_ars: profile.monthly_capital_ars, mep: snap.mep, ccl: snap.ccl || cachedCcl?.value || 0,
+          capital_ars: profile.monthly_capital_ars, mep: snap.mep, ccl: cclState.effective || snap.ccl || 0,
           quotes, positions: [],
         },
       });
       setAnalysis(a); setAnalysisAt(Date.now());
     } catch (e) { toast.error("Error IA: " + (e as Error).message); }
     finally { setLoadingAi(false); }
-  }, [fetchAnalysis, snapshot, profile, cachedCcl]);
+  }, [fetchAnalysis, snapshot, profile, cclState.effective]);
 
   // Trigger once when first snapshot+profile arrive, and every N minutes thereafter.
   const didAutoRun = useRef(false);
@@ -247,11 +229,8 @@ function Dashboard() {
   }, [profile, runAnalysis]);
 
   // --- Live derived data ---
-  const ccl = snapshot?.ccl || 0;
-  // Fallback: MEP if CCL missing. Then localStorage.
-  const cclEffective = ccl > 0 ? ccl : (snapshot?.mep || cachedCcl?.value || 0);
-  const cclSource: "live" | "mep" | "cache" | "none" =
-    ccl > 0 ? "live" : snapshot?.mep ? "mep" : cachedCcl ? "cache" : "none";
+  // CCL viene de useCcl (CCL primario, MEP fallback, cache localStorage).
+  const cclEffective = cclState.effective;
 
   // positions live (from store)
   const positionsLive = usePositionsLive(positions);
@@ -376,7 +355,7 @@ function Dashboard() {
 
   // ===== Metrics =====
   const score = analysis ? Math.round(analysis.market_score) : 0;
-  const cclMinsAgo = cachedCcl ? Math.max(0, Math.floor((Date.now() - cachedCcl.ts) / 60000)) : null;
+  
   const marketStateLabel = (() => {
     if (!snapshot) return { dot: "bg-muted-foreground", text: "—", sub: "Cargando" };
     if (snapshot.is_open) {
@@ -400,10 +379,19 @@ function Dashboard() {
   const countdownLabel = `${Math.floor(secsUntilNext / 60)}:${String(secsUntilNext % 60).padStart(2, "0")}`;
 
   const cclDisplay = (() => {
-    if (cclSource === "live") return { value: ars(cclEffective), sub: snapshot ? `Dólar CCL · ${timeAgo(snapshot.fx_updated_at)}` : "" };
-    if (cclSource === "mep") return { value: ars(cclEffective), sub: "Usando MEP como fallback" };
-    if (cclSource === "cache" && cachedCcl) return { value: ars(cachedCcl.value), sub: `CCL no disponible · último hace ${cclMinsAgo}m` };
-    return { value: "Reintentando…", sub: "Sin red" };
+    const r = cclState.lastResult;
+    const known = cclState.lastKnown;
+    if (r?.ok && r.value > 0) {
+      const sub = r.source === "mep"
+        ? `MEP fallback · ${timeAgo(r.fetched_at)}`
+        : `Dólar CCL · ${timeAgo(r.fetched_at)}`;
+      return { value: ars(r.value), sub };
+    }
+    if (known) {
+      const ageStr = cclState.ageMin == null ? "" : `${cclState.ageMin}m`;
+      return { value: ars(known.value), sub: `CCL no disponible · último hace ${ageStr}` };
+    }
+    return { value: cclState.loading ? "Calculando…" : "Reintentando…", sub: "Sin conexión a la fuente" };
   })();
 
   return (
