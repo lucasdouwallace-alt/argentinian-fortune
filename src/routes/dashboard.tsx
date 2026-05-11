@@ -1066,5 +1066,51 @@ function usePositionsLive(positions: Position[]) {
   }), [positions, bySymbol]);
 }
 
+// Calculadora interactiva: usuario tipea precio Balanz y ve stop/target en ARS.
+function BalanzCalculator({ sig }: { sig: AssetSignal }) {
+  const [priceStr, setPriceStr] = useState("");
+  const price = Number(priceStr.replace(/[^\d.,]/g, "").replace(/\./g, "").replace(",", ".")) || 0;
+  const sl = sig.stop_loss_pct || 0;
+  const tp = sig.take_profit_pct || 0;
+  const stopArs = price * (1 - sl / 100);
+  const targetArs = price * (1 + tp / 100);
+  const profitPerShare = targetArs - price;
+
+  return (
+    <div className="mt-4 border-t pt-4">
+      <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
+        💰 Calculá tus niveles en ARS
+      </div>
+      <label className="block text-xs text-muted-foreground mb-1">
+        Mi precio en Balanz (ARS)
+      </label>
+      <Input
+        inputMode="decimal"
+        placeholder="ej: 97000"
+        value={priceStr}
+        onChange={(e) => setPriceStr(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        className="font-mono"
+      />
+      {price > 0 && (
+        <div className="mt-3 space-y-1.5 text-sm font-mono" data-mono>
+          <div className="flex items-center justify-between bg-destructive/10 rounded-lg px-3 py-2">
+            <span className="text-xs text-muted-foreground">Vendé si BAJA a (Stop)</span>
+            <span className="font-bold text-destructive">{ars(stopArs)} <span className="text-xs">(-{sl}%)</span></span>
+          </div>
+          <div className="flex items-center justify-between bg-success/10 rounded-lg px-3 py-2">
+            <span className="text-xs text-muted-foreground">Vendé si SUBE a (Target)</span>
+            <span className="font-bold text-success">{ars(targetArs)} <span className="text-xs">(+{tp}%)</span></span>
+          </div>
+          <div className="flex items-center justify-between px-3 py-1 text-xs text-muted-foreground">
+            <span>Ganancia potencial por acción</span>
+            <span className="font-bold text-foreground">{ars(profitPerShare)}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // silence unused warnings for symbols we keep imported intentionally
 void TICKER_NAME; void TICKER_CATEGORY;
