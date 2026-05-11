@@ -115,5 +115,62 @@ describe("useCcl", () => {
     });
     expect(getCclMock.mock.calls.length).toBeGreaterThan(initialCalls);
     expect(result.current.effective).toBe(1555);
+
+  it("polling backoff grows on consecutive failures and resets on recovery", async () => {
+    vi.useFakeTimers();
+    try {
+      getCclMock.mockResolvedValue(failResult());
+      const { result } = renderHook(() => useCcl());
+
+      // Initial fetch (failure #1) -> next poll at 30s.
+      await vi.waitFor(() => expect(result.current.consecutiveFailures).toBe(1));
+      expect(result.current.nextPollMs).toBe(30_000);
+
+      // Advance 30s -> failure #2 -> nextPoll 60s.
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(result.current.consecutiveFailures).toBe(2);
+      expect(result.current.nextPollMs).toBe(60_000);
+
+      // Advance 60s -> failure #3 -> nextPoll 120s.
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(result.current.consecutiveFailures).toBe(3);
+      expect(result.current.nextPollMs).toBe(120_000);
+
+      // Recovery: next tick succeeds -> failures reset, poll back to 30s.
+      getCclMock.mockResolvedValue(okResult(1600, "ccl"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(result.current.consecutiveFailures).toBe(0);
+      expect(result.current.effective).toBe(1600);
+      expect(result.current.nextPollMs).toBe(30_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refresh() cancels the pending timer and refetches immediately", async () => {
+    vi.useFakeTimers();
+    try {
+      getCclMock.mockResolvedValue(okResult(1500, "ccl"));
+      const { result } = renderHook(() => useCcl());
+      await vi.waitFor(() => expect(result.current.lastResult?.ok).toBe(true));
+
+      // Pending timer is scheduled ~30s out. If we DON'T refresh, no extra calls happen at 10s.
+      const callsBefore = getCclMock.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(getCclMock.mock.calls.length).toBe(callsBefore);
+
+      // Manual refresh forces an immediate refetch (cancels pending timer).
+      getCclMock.mockResolvedValue(okResult(1700, "ccl"));
+      await act(async () => { await result.current.refresh(); });
+      expect(getCclMock.mock.calls.length).toBe(callsBefore + 1);
+      expect(result.current.effective).toBe(1700);
+
+      // Advancing 10s more should still NOT trigger extra polls (timer was reset to 30s).
+      const callsAfterRefresh = getCclMock.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(getCclMock.mock.calls.length).toBe(callsAfterRefresh);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
