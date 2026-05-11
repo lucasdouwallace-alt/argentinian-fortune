@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { getCcl, type CclResult } from "@/lib/ccl.functions";
+import { captureCclFailure, captureCclSuccess } from "@/lib/monitoring";
 
 const STORAGE_KEY = "oraculo:ccl_last";
 const POLL_MS = 30_000;
+const MAX_BACKOFF_MS = 5 * 60_000; // 5 min
 
 type CachedCcl = {
   value: number;
@@ -12,15 +14,14 @@ type CachedCcl = {
 };
 
 export type CclState = {
-  // Valor a usar para cálculos (cache si fresh fetch falla)
   effective: number;
-  // Estado del último fetch
   lastResult: CclResult | null;
-  // Última cotización conocida (puede ser de cache)
   lastKnown: CachedCcl | null;
   loading: boolean;
-  ageMin: number | null;     // edad de lastKnown en minutos
-  refresh: () => void;
+  ageMin: number | null;
+  consecutiveFailures: number;
+  nextPollMs: number;
+  refresh: () => Promise<void>;
 };
 
 function readCache(): CachedCcl | null {
@@ -43,12 +44,21 @@ function writeCache(value: number, source: "ccl" | "mep") {
   } catch { /* noop */ }
 }
 
+// Exponential backoff: 30s, 60s, 120s, 240s, capped at 5min.
+export function computeBackoffMs(failures: number): number {
+  if (failures <= 0) return POLL_MS;
+  const ms = POLL_MS * Math.pow(2, Math.min(failures - 1, 5));
+  return Math.min(ms, MAX_BACKOFF_MS);
+}
+
 export function useCcl(): CclState {
   const fetchCcl = useServerFn(getCcl);
   const [lastResult, setLastResult] = useState<CclResult | null>(null);
   const [lastKnown, setLastKnown] = useState<CachedCcl | null>(() => readCache());
   const [loading, setLoading] = useState(false);
+  const [consecutiveFailures, setConsecutiveFailures] = useState(0);
   const [, setNow] = useState(Date.now());
+  const failuresRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const tick = useCallback(async () => {
@@ -57,25 +67,46 @@ export function useCcl(): CclState {
       const res = await fetchCcl();
       setLastResult(res);
       if (res.ok && res.value > 0 && (res.source === "ccl" || res.source === "mep")) {
+        const recoveredAfter = failuresRef.current;
+        failuresRef.current = 0;
+        setConsecutiveFailures(0);
         const cached: CachedCcl = { value: res.value, source: res.source, ts: Date.now() };
         writeCache(res.value, res.source);
         setLastKnown(cached);
+        captureCclSuccess({ source: res.source, durationMs: res.duration_ms, recoveredAfter });
+      } else {
+        failuresRef.current += 1;
+        setConsecutiveFailures(failuresRef.current);
+        captureCclFailure({
+          source: res.source,
+          durationMs: res.duration_ms,
+          consecutiveFailures: failuresRef.current,
+          message: res.attempts?.map((a) => `${a.source}:${a.error ?? "ok"}`).join(" | "),
+        });
       }
-    } catch {
-      // network error: mantener lastResult anterior
+    } catch (e) {
+      failuresRef.current += 1;
+      setConsecutiveFailures(failuresRef.current);
+      captureCclFailure({
+        source: "none",
+        durationMs: 0,
+        consecutiveFailures: failuresRef.current,
+        message: e instanceof Error ? e.message : String(e),
+      });
     } finally {
       setLoading(false);
     }
   }, [fetchCcl]);
 
-  // Polling cada 30s. Si el último fetch falló, igual reintentamos cada 30s.
+  // Polling con backoff exponencial cuando hay fallos.
   useEffect(() => {
     let cancelled = false;
     const loop = async () => {
       if (cancelled) return;
       await tick();
       if (cancelled) return;
-      timerRef.current = setTimeout(loop, POLL_MS);
+      const delay = computeBackoffMs(failuresRef.current);
+      timerRef.current = setTimeout(loop, delay);
     };
     loop();
     return () => {
@@ -84,14 +115,28 @@ export function useCcl(): CclState {
     };
   }, [tick]);
 
-  // Tick por minuto para refrescar "hace X min"
+  // Refresca "hace X min".
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(id);
   }, []);
 
+  // Refresh manual: cancela el timer pendiente y dispara un fetch inmediato.
+  const refresh = useCallback(async () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    await tick();
+    timerRef.current = setTimeout(async function next() {
+      await tick();
+      timerRef.current = setTimeout(next, computeBackoffMs(failuresRef.current));
+    }, computeBackoffMs(failuresRef.current));
+  }, [tick]);
+
   const ageMin = lastKnown ? Math.max(0, Math.floor((Date.now() - lastKnown.ts) / 60_000)) : null;
   const effective = lastResult?.ok && lastResult.value > 0 ? lastResult.value : (lastKnown?.value ?? 0);
+  const nextPollMs = computeBackoffMs(consecutiveFailures);
 
-  return { effective, lastResult, lastKnown, loading, ageMin, refresh: tick };
+  return { effective, lastResult, lastKnown, loading, ageMin, consecutiveFailures, nextPollMs, refresh };
 }
