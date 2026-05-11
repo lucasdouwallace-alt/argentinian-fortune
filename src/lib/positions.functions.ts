@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { attachSupabaseAuth } from "@/integrations/supabase/auth-client-middleware";
 
 const ALPACA_DATA = "https://data.alpaca.markets";
 
@@ -56,7 +57,7 @@ async function fetchFx(): Promise<{ ccl: number; mep: number }> {
 const tickerSchema = z.string().trim().toUpperCase().min(1).max(10).regex(/^[A-Z.]+$/);
 
 export const openPosition = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([attachSupabaseAuth, requireSupabaseAuth])
   .inputValidator((d: { ticker: string; quantity: number }) =>
     z.object({
       ticker: tickerSchema,
@@ -89,7 +90,7 @@ export const openPosition = createServerFn({ method: "POST" })
   });
 
 export const closePosition = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([attachSupabaseAuth, requireSupabaseAuth])
   .inputValidator((d: { id: string }) =>
     z.object({ id: z.string().uuid() }).parse(d)
   )
