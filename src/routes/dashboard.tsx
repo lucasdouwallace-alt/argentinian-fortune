@@ -416,6 +416,39 @@ function Dashboard() {
       </header>
 
       <main className="max-w-7xl mx-auto p-4 space-y-6">
+        {cclState.consecutiveFailures >= 3 && (
+          <div className="border border-destructive/40 bg-destructive/10 text-destructive rounded-xl p-4 shadow-card flex items-start gap-3">
+            <AlertTriangle className="size-5 shrink-0 mt-0.5" />
+            <div className="flex-1 text-sm">
+              <div className="font-semibold">Fuente de CCL caída</div>
+              <div className="text-destructive/80 mt-0.5">
+                {cclState.consecutiveFailures} fallos consecutivos en CCL y MEP. Próximo reintento automático en{" "}
+                <span className="font-mono">{Math.round(cclState.nextPollMs / 1000)}s</span>.
+                {cclState.lastKnown && (
+                  <> Mostrando último valor conocido: <span className="font-mono">{ars(cclState.lastKnown.value)}</span> ({cclState.ageMin ?? 0}m).</>
+                )}
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-destructive/40 text-destructive hover:bg-destructive/20"
+              disabled={cclState.loading}
+              onClick={async () => {
+                const tId = toast.loading("Reintentando CCL…");
+                const res = await cclState.refresh();
+                if (res?.ok && res.value > 0) {
+                  toast.success(`${res.source === "mep" ? "MEP" : "CCL"}: ${ars(res.value)}`, { id: tId });
+                } else {
+                  toast.error("CCL sigue caído", { id: tId });
+                }
+              }}
+            >
+              <RefreshCw className={`size-3.5 mr-1 ${cclState.loading ? "animate-spin" : ""}`} />
+              Reintentar ya
+            </Button>
+          </div>
+        )}
         {/* ===== METRICS (sin Capital) ===== */}
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className={`bg-card border rounded-xl p-4 shadow-card ${analysis ? scoreColor(score) : ""}`}>
@@ -433,7 +466,19 @@ function Dashboard() {
               <div className="text-xs uppercase tracking-wide text-muted-foreground">Dólar CCL</div>
               <button
                 type="button"
-                onClick={() => { void cclState.refresh(); }}
+                onClick={async () => {
+                  const tId = toast.loading("Refrescando CCL…");
+                  const res = await cclState.refresh();
+                  if (res?.ok && res.value > 0) {
+                    toast.success(
+                      `${res.source === "mep" ? "MEP" : "CCL"}: ${ars(res.value)}`,
+                      { id: tId, description: `Fuente: ${res.source.toUpperCase()} · ${res.duration_ms}ms` },
+                    );
+                  } else {
+                    const msg = res?.attempts?.map((a) => `${a.source.toUpperCase()}: ${a.error ?? "OK"}`).join(" · ") || "Sin respuesta";
+                    toast.error("No se pudo obtener CCL", { id: tId, description: msg });
+                  }
+                }}
                 disabled={cclState.loading}
                 aria-label="Refrescar CCL"
                 title="Refrescar CCL"
@@ -448,6 +493,24 @@ function Dashboard() {
               <div className="text-[10px] text-destructive mt-1">
                 {cclState.consecutiveFailures} fallo(s) · próximo intento en {Math.round(cclState.nextPollMs / 1000)}s
               </div>
+            )}
+            {cclState.lastResult?.attempts && cclState.lastResult.attempts.length > 0 && (
+              <details className="mt-2 text-[10px]">
+                <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none">
+                  Últimos intentos ({cclState.lastResult.attempts.length})
+                </summary>
+                <ul className="mt-1.5 space-y-1">
+                  {cclState.lastResult.attempts.map((a, i) => (
+                    <li key={i} className="flex items-center gap-2 font-mono">
+                      <span className={`size-1.5 rounded-full ${a.ok ? "bg-success" : "bg-destructive"}`} />
+                      <span className="font-bold">{a.source.toUpperCase()}</span>
+                      <span className="text-muted-foreground">{a.status ?? "—"}</span>
+                      <span className="text-muted-foreground">{a.duration_ms}ms</span>
+                      {a.error && <span className="text-destructive truncate" title={a.error}>· {a.error}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
           </div>
 

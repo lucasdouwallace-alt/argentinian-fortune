@@ -21,7 +21,7 @@ export type CclState = {
   ageMin: number | null;
   consecutiveFailures: number;
   nextPollMs: number;
-  refresh: () => Promise<void>;
+  refresh: () => Promise<CclResult | null>;
 };
 
 function readCache(): CachedCcl | null {
@@ -61,7 +61,7 @@ export function useCcl(): CclState {
   const failuresRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const tick = useCallback(async () => {
+  const tick = useCallback(async (): Promise<CclResult | null> => {
     setLoading(true);
     try {
       const res = await fetchCcl();
@@ -84,6 +84,7 @@ export function useCcl(): CclState {
           message: res.attempts?.map((a) => `${a.source}:${a.error ?? "ok"}`).join(" | "),
         });
       }
+      return res;
     } catch (e) {
       failuresRef.current += 1;
       setConsecutiveFailures(failuresRef.current);
@@ -93,6 +94,7 @@ export function useCcl(): CclState {
         consecutiveFailures: failuresRef.current,
         message: e instanceof Error ? e.message : String(e),
       });
+      return null;
     } finally {
       setLoading(false);
     }
@@ -122,16 +124,17 @@ export function useCcl(): CclState {
   }, []);
 
   // Refresh manual: cancela el timer pendiente y dispara un fetch inmediato.
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<CclResult | null> => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    await tick();
+    const res = await tick();
     timerRef.current = setTimeout(async function next() {
       await tick();
       timerRef.current = setTimeout(next, computeBackoffMs(failuresRef.current));
     }, computeBackoffMs(failuresRef.current));
+    return res;
   }, [tick]);
 
   const ageMin = lastKnown ? Math.max(0, Math.floor((Date.now() - lastKnown.ts) / 60_000)) : null;
