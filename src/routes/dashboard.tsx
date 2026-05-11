@@ -106,6 +106,11 @@ function Dashboard() {
   const [closingId, setClosingId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const cclState = useCcl();
+  const [showDisclaimer, setShowDisclaimer] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!localStorage.getItem("oraculo:disclaimer_accepted")) setShowDisclaimer(true);
+  }, []);
 
   // Filters
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
@@ -207,6 +212,7 @@ function Dashboard() {
       const a = await fetchAnalysis({
         data: {
           capital_ars: profile.monthly_capital_ars, mep: snap.mep, ccl: cclState.effective || snap.ccl || 0,
+          market_open: !!snap.is_open,
           quotes, positions: [],
         },
       });
@@ -396,6 +402,30 @@ function Dashboard() {
 
   return (
     <TooltipProvider>
+    {showDisclaimer && (
+      <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="bg-card border border-primary/40 rounded-2xl shadow-glow max-w-md w-full p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Sparkles className="size-6 text-primary" />
+            <h2 className="font-display text-2xl font-bold">El Oráculo</h2>
+          </div>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            El Oráculo da órdenes de trading basadas en análisis de IA y datos en tiempo real.
+            Las predicciones <strong className="text-foreground">no son garantías</strong>.
+            Al continuar aceptás que toda decisión de inversión y sus consecuencias son de tu exclusiva responsabilidad.
+          </p>
+          <Button
+            className="w-full"
+            onClick={() => {
+              localStorage.setItem("oraculo:disclaimer_accepted", String(Date.now()));
+              setShowDisclaimer(false);
+            }}
+          >
+            Entiendo, dame las órdenes
+          </Button>
+        </div>
+      </div>
+    )}
     <div className="min-h-screen bg-glow">
       <header className="border-b bg-background/80 backdrop-blur sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-4">
@@ -555,21 +585,38 @@ function Dashboard() {
 
           {/* ===== OPORTUNIDADES ===== */}
           <TabsContent value="oportunidades" className="space-y-4 mt-4">
-            {/* Banner top recommendation */}
+            {/* ===== ORDEN DEL DÍA ===== */}
             {topPick?.sig && (
               <section className={`bg-gradient-to-r ${bannerBg(topPick.sig.signal)} border rounded-xl p-5 shadow-card`}>
                 <div className="flex items-start gap-4 flex-wrap">
-                  <div className="text-4xl">🎯</div>
-                  <div className="flex-1 min-w-[240px]">
-                    <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Mayor oportunidad ahora</div>
+                  <div className="text-4xl">⚡</div>
+                  <div className="flex-1 min-w-[260px] space-y-2">
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground font-bold">
+                      Orden del día — El Oráculo dice
+                    </div>
                     <div className="flex items-center gap-3 flex-wrap">
                       <h2 className="text-2xl md:text-3xl font-display font-bold">
                         {topPick.sig.signal} {topPick.ticker}
+                        {topPick.sig.entry_price_usd > 0 && (
+                          <span className="text-muted-foreground"> a </span>
+                        )}
+                        {topPick.sig.entry_price_usd > 0 && (
+                          <span className="font-mono" data-mono>{usd(topPick.sig.entry_price_usd)}</span>
+                        )}
                       </h2>
                       <SignalPill signal={topPick.sig.signal} large />
-                      <span className="text-base">· {topPick.sig.probability_pct}% prob · {pct(topPick.sig.estimated_return_pct)} est.</span>
                     </div>
-                    <p className="text-sm mt-2 leading-relaxed max-w-3xl">{topPick.sig.action_reason}</p>
+                    <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm font-mono" data-mono>
+                      {topPick.sig.stop_price_usd > 0 && (
+                        <span><span className="text-muted-foreground">Stop:</span> <span className="text-destructive font-bold">{usd(topPick.sig.stop_price_usd)}</span></span>
+                      )}
+                      {topPick.sig.target_price_usd > 0 && (
+                        <span><span className="text-muted-foreground">Target:</span> <span className="text-success font-bold">{usd(topPick.sig.target_price_usd)}</span></span>
+                      )}
+                      <span><span className="text-muted-foreground">Plazo:</span> <span className="font-bold">{topPick.sig.horizon}</span></span>
+                      <span><span className="text-muted-foreground">Probabilidad:</span> <span className="font-bold">{topPick.sig.probability_pct}%</span></span>
+                    </div>
+                    <p className="text-sm leading-relaxed max-w-3xl italic">"{topPick.sig.action_reason}"</p>
                   </div>
                 </div>
               </section>
@@ -964,6 +1011,22 @@ const OpportunityCard = memoCard(function OpportunityCardImpl({
             </div>
             <span className={`text-xs font-semibold ${riskColor(sig.risk_level)}`}>Riesgo {sig.risk_level}</span>
           </div>
+          {(sig.entry_price_usd > 0 || sig.stop_price_usd > 0 || sig.target_price_usd > 0) && (
+            <div className="grid grid-cols-3 gap-2 mb-3 font-mono text-sm" data-mono>
+              <div className="bg-secondary/50 rounded-lg p-2">
+                <div className="text-[10px] uppercase text-muted-foreground">Entrada</div>
+                <div className="font-bold">{sig.entry_price_usd > 0 ? usd(sig.entry_price_usd) : "—"}</div>
+              </div>
+              <div className="bg-destructive/10 rounded-lg p-2">
+                <div className="text-[10px] uppercase text-muted-foreground">Stop</div>
+                <div className="font-bold text-destructive">{sig.stop_price_usd > 0 ? usd(sig.stop_price_usd) : "—"}</div>
+              </div>
+              <div className="bg-success/10 rounded-lg p-2">
+                <div className="text-[10px] uppercase text-muted-foreground">Target</div>
+                <div className="font-bold text-success">{sig.target_price_usd > 0 ? usd(sig.target_price_usd) : "—"}</div>
+              </div>
+            </div>
+          )}
           <div className="text-xs text-muted-foreground">
             Retorno estimado: <span className="text-foreground font-semibold">{pct(sig.estimated_return_pct)}</span> · {sig.horizon}
           </div>
