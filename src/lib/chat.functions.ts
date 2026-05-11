@@ -44,11 +44,9 @@ export const chatWithOraculo = createServerFn({ method: "POST" })
       }
     }
 
+    const { ORACULO_CHAT_SYSTEM_PROMPT } = await import("@/lib/oraculoPrompt");
     const system = [
-      "Sos Oráculo, un asistente experto en inversiones bursátiles para usuarios argentinos.",
-      "Respondés en español rioplatense, conciso, claro, con bullets cuando ayuda.",
-      "Aclarás siempre que NO es asesoramiento financiero personalizado.",
-      "Razonás sobre ADRs argentinos, tech USA, dólar MEP/CCL y riesgo país.",
+      ORACULO_CHAT_SYSTEM_PROMPT,
       ctxLines.length ? "\nContexto de mercado en vivo:\n" + ctxLines.join("\n") : "",
     ].join("\n");
 
@@ -57,6 +55,7 @@ export const chatWithOraculo = createServerFn({ method: "POST" })
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "google/gemini-2.5-flash",
+        temperature: 0.1,
         messages: [{ role: "system", content: system }, ...data.messages],
       }),
     });
