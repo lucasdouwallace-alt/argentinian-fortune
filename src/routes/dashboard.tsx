@@ -379,10 +379,19 @@ function Dashboard() {
   const countdownLabel = `${Math.floor(secsUntilNext / 60)}:${String(secsUntilNext % 60).padStart(2, "0")}`;
 
   const cclDisplay = (() => {
-    if (cclSource === "live") return { value: ars(cclEffective), sub: snapshot ? `Dólar CCL · ${timeAgo(snapshot.fx_updated_at)}` : "" };
-    if (cclSource === "mep") return { value: ars(cclEffective), sub: "Usando MEP como fallback" };
-    if (cclSource === "cache" && cachedCcl) return { value: ars(cachedCcl.value), sub: `CCL no disponible · último hace ${cclMinsAgo}m` };
-    return { value: "Reintentando…", sub: "Sin red" };
+    const r = cclState.lastResult;
+    const known = cclState.lastKnown;
+    if (r?.ok && r.value > 0) {
+      const sub = r.source === "mep"
+        ? `MEP fallback · ${timeAgo(r.fetched_at)}`
+        : `Dólar CCL · ${timeAgo(r.fetched_at)}`;
+      return { value: ars(r.value), sub };
+    }
+    if (known) {
+      const ageStr = cclState.ageMin == null ? "" : `${cclState.ageMin}m`;
+      return { value: ars(known.value), sub: `CCL no disponible · último hace ${ageStr}` };
+    }
+    return { value: cclState.loading ? "Calculando…" : "Reintentando…", sub: "Sin conexión a la fuente" };
   })();
 
   return (
