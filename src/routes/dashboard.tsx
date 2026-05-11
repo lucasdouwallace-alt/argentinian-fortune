@@ -402,6 +402,30 @@ function Dashboard() {
 
   return (
     <TooltipProvider>
+    {showDisclaimer && (
+      <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="bg-card border border-primary/40 rounded-2xl shadow-glow max-w-md w-full p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Sparkles className="size-6 text-primary" />
+            <h2 className="font-display text-2xl font-bold">El Oráculo</h2>
+          </div>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            El Oráculo da órdenes de trading basadas en análisis de IA y datos en tiempo real.
+            Las predicciones <strong className="text-foreground">no son garantías</strong>.
+            Al continuar aceptás que toda decisión de inversión y sus consecuencias son de tu exclusiva responsabilidad.
+          </p>
+          <Button
+            className="w-full"
+            onClick={() => {
+              localStorage.setItem("oraculo:disclaimer_accepted", String(Date.now()));
+              setShowDisclaimer(false);
+            }}
+          >
+            Entiendo, dame las órdenes
+          </Button>
+        </div>
+      </div>
+    )}
     <div className="min-h-screen bg-glow">
       <header className="border-b bg-background/80 backdrop-blur sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-4">
