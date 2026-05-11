@@ -21,7 +21,7 @@ export type CclState = {
   ageMin: number | null;
   consecutiveFailures: number;
   nextPollMs: number;
-  refresh: () => Promise<void>;
+  refresh: () => Promise<CclResult | null>;
 };
 
 function readCache(): CachedCcl | null {
