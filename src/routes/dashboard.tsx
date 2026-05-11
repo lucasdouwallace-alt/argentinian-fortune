@@ -597,21 +597,15 @@ function Dashboard() {
                     <div className="flex items-center gap-3 flex-wrap">
                       <h2 className="text-2xl md:text-3xl font-display font-bold">
                         {topPick.sig.signal} {topPick.ticker}
-                        {topPick.sig.entry_price_usd > 0 && (
-                          <span className="text-muted-foreground"> a </span>
-                        )}
-                        {topPick.sig.entry_price_usd > 0 && (
-                          <span className="font-mono" data-mono>{usd(topPick.sig.entry_price_usd)}</span>
-                        )}
                       </h2>
                       <SignalPill signal={topPick.sig.signal} large />
                     </div>
                     <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm font-mono" data-mono>
-                      {topPick.sig.stop_price_usd > 0 && (
-                        <span><span className="text-muted-foreground">Stop:</span> <span className="text-destructive font-bold">{usd(topPick.sig.stop_price_usd)}</span></span>
+                      {topPick.sig.stop_loss_pct > 0 && (
+                        <span><span className="text-muted-foreground">Stop:</span> <span className="text-destructive font-bold">-{topPick.sig.stop_loss_pct}%</span></span>
                       )}
-                      {topPick.sig.target_price_usd > 0 && (
-                        <span><span className="text-muted-foreground">Target:</span> <span className="text-success font-bold">{usd(topPick.sig.target_price_usd)}</span></span>
+                      {topPick.sig.take_profit_pct > 0 && (
+                        <span><span className="text-muted-foreground">Target:</span> <span className="text-success font-bold">+{topPick.sig.take_profit_pct}%</span></span>
                       )}
                       <span><span className="text-muted-foreground">Plazo:</span> <span className="font-bold">{topPick.sig.horizon}</span></span>
                       <span><span className="text-muted-foreground">Probabilidad:</span> <span className="font-bold">{topPick.sig.probability_pct}%</span></span>
@@ -1011,22 +1005,29 @@ const OpportunityCard = memoCard(function OpportunityCardImpl({
             </div>
             <span className={`text-xs font-semibold ${riskColor(sig.risk_level)}`}>Riesgo {sig.risk_level}</span>
           </div>
-          {(sig.entry_price_usd > 0 || sig.stop_price_usd > 0 || sig.target_price_usd > 0) && (
-            <div className="grid grid-cols-3 gap-2 mb-3 font-mono text-sm" data-mono>
-              <div className="bg-secondary/50 rounded-lg p-2">
-                <div className="text-[10px] uppercase text-muted-foreground">Entrada</div>
-                <div className="font-bold">{sig.entry_price_usd > 0 ? usd(sig.entry_price_usd) : "—"}</div>
-              </div>
+          {(sig.stop_loss_pct > 0 || sig.take_profit_pct > 0) && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3 font-mono text-sm" data-mono>
               <div className="bg-destructive/10 rounded-lg p-2">
-                <div className="text-[10px] uppercase text-muted-foreground">Stop</div>
-                <div className="font-bold text-destructive">{sig.stop_price_usd > 0 ? usd(sig.stop_price_usd) : "—"}</div>
+                <div className="text-[10px] uppercase text-muted-foreground">Stop Loss</div>
+                <div className="font-bold text-destructive">-{sig.stop_loss_pct}%</div>
               </div>
               <div className="bg-success/10 rounded-lg p-2">
-                <div className="text-[10px] uppercase text-muted-foreground">Target</div>
-                <div className="font-bold text-success">{sig.target_price_usd > 0 ? usd(sig.target_price_usd) : "—"}</div>
+                <div className="text-[10px] uppercase text-muted-foreground">Take Profit</div>
+                <div className="font-bold text-success">+{sig.take_profit_pct}%</div>
               </div>
+              <div className="bg-secondary/50 rounded-lg p-2 col-span-2 sm:col-span-1">
+                <div className="text-[10px] uppercase text-muted-foreground">Plazo</div>
+                <div className="font-bold">{sig.horizon_days || 5} días háb.</div>
+              </div>
+              {sig.signal === "ESPERAR" && sig.entry_offset_pct !== 0 && (
+                <div className="bg-warning/10 rounded-lg p-2 col-span-2 sm:col-span-3">
+                  <div className="text-[10px] uppercase text-muted-foreground">Entrar cuando se mueva</div>
+                  <div className="font-bold text-warning">{sig.entry_offset_pct > 0 ? "+" : ""}{sig.entry_offset_pct}% desde precio actual</div>
+                </div>
+              )}
             </div>
           )}
+          <BalanzCalculator sig={sig} />
           <div className="text-xs text-muted-foreground">
             Retorno estimado: <span className="text-foreground font-semibold">{pct(sig.estimated_return_pct)}</span> · {sig.horizon}
           </div>
@@ -1063,6 +1064,52 @@ function usePositionsLive(positions: Position[]) {
     const pnl_pct = cur ? (cur / Number(p.entry_price_usd) - 1) * 100 : 0;
     return { ...p, current_price_usd: cur, pnl_usd, pnl_pct };
   }), [positions, bySymbol]);
+}
+
+// Calculadora interactiva: usuario tipea precio Balanz y ve stop/target en ARS.
+function BalanzCalculator({ sig }: { sig: AssetSignal }) {
+  const [priceStr, setPriceStr] = useState("");
+  const price = Number(priceStr.replace(/[^\d.,]/g, "").replace(/\./g, "").replace(",", ".")) || 0;
+  const sl = sig.stop_loss_pct || 0;
+  const tp = sig.take_profit_pct || 0;
+  const stopArs = price * (1 - sl / 100);
+  const targetArs = price * (1 + tp / 100);
+  const profitPerShare = targetArs - price;
+
+  return (
+    <div className="mt-4 border-t pt-4">
+      <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
+        💰 Calculá tus niveles en ARS
+      </div>
+      <label className="block text-xs text-muted-foreground mb-1">
+        Mi precio en Balanz (ARS)
+      </label>
+      <Input
+        inputMode="decimal"
+        placeholder="ej: 97000"
+        value={priceStr}
+        onChange={(e) => setPriceStr(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        className="font-mono"
+      />
+      {price > 0 && (
+        <div className="mt-3 space-y-1.5 text-sm font-mono" data-mono>
+          <div className="flex items-center justify-between bg-destructive/10 rounded-lg px-3 py-2">
+            <span className="text-xs text-muted-foreground">Vendé si BAJA a (Stop)</span>
+            <span className="font-bold text-destructive">{ars(stopArs)} <span className="text-xs">(-{sl}%)</span></span>
+          </div>
+          <div className="flex items-center justify-between bg-success/10 rounded-lg px-3 py-2">
+            <span className="text-xs text-muted-foreground">Vendé si SUBE a (Target)</span>
+            <span className="font-bold text-success">{ars(targetArs)} <span className="text-xs">(+{tp}%)</span></span>
+          </div>
+          <div className="flex items-center justify-between px-3 py-1 text-xs text-muted-foreground">
+            <span>Ganancia potencial por acción</span>
+            <span className="font-bold text-foreground">{ars(profitPerShare)}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // silence unused warnings for symbols we keep imported intentionally

@@ -1,7 +1,8 @@
 import { memo, useEffect } from "react";
 import { usePriceFor, usePrices } from "@/lib/pricesStore";
 import { usd, ars } from "@/lib/format";
-import { TrendingDown, TrendingUp } from "lucide-react";
+import { Info, TrendingDown, TrendingUp } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 type Props = { symbol: string; ccl: number };
 
@@ -33,7 +34,26 @@ function PriceCellImpl({ symbol, ccl }: Props) {
         {usd(tick.price)}
       </span>
       <span className="text-muted-foreground">·</span>
-      <span className="text-muted-foreground text-xs">{arsLabel}</span>
+      <span className="text-muted-foreground text-xs inline-flex items-center gap-1">
+        {arsLabel}
+        {ccl > 0 && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); }}
+                className="text-muted-foreground hover:text-foreground"
+                aria-label="Información del precio en pesos"
+              >
+                <Info className="size-3" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              Precio calculado en base a NYSE × CCL. El precio exacto del CEDEAR en pesos puede variar 1-3% respecto al BYMA. Confirmá siempre el precio en Balanz antes de operar.
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </span>
       {ch !== 0 && (
         <span
           className={`inline-flex items-center gap-1 text-xs ${ch >= 0 ? "text-success" : "text-destructive"}`}
