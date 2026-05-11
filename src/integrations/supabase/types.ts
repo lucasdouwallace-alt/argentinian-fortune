@@ -14,6 +14,57 @@ export type Database = {
   }
   public: {
     Tables: {
+      crypto_trades: {
+        Row: {
+          capital_usd: number
+          closed_at: string | null
+          created_at: string
+          entry_price_usd: number
+          exit_price_usd: number | null
+          id: string
+          pnl_pct: number | null
+          pnl_usd: number | null
+          signal: string
+          status: string
+          stop_price_usd: number
+          target_price_usd: number
+          ticker: string
+          user_id: string
+        }
+        Insert: {
+          capital_usd?: number
+          closed_at?: string | null
+          created_at?: string
+          entry_price_usd: number
+          exit_price_usd?: number | null
+          id?: string
+          pnl_pct?: number | null
+          pnl_usd?: number | null
+          signal: string
+          status?: string
+          stop_price_usd: number
+          target_price_usd: number
+          ticker: string
+          user_id: string
+        }
+        Update: {
+          capital_usd?: number
+          closed_at?: string | null
+          created_at?: string
+          entry_price_usd?: number
+          exit_price_usd?: number | null
+          id?: string
+          pnl_pct?: number | null
+          pnl_usd?: number | null
+          signal?: string
+          status?: string
+          stop_price_usd?: number
+          target_price_usd?: number
+          ticker?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       portfolio_assets: {
         Row: {
           created_at: string
@@ -100,6 +151,39 @@ export type Database = {
           quantity?: number
           status?: string
           ticker?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      price_alerts: {
+        Row: {
+          created_at: string
+          direction: string
+          id: string
+          is_triggered: boolean
+          target_price: number
+          ticker: string
+          triggered_at: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          direction: string
+          id?: string
+          is_triggered?: boolean
+          target_price: number
+          ticker: string
+          triggered_at?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          direction?: string
+          id?: string
+          is_triggered?: boolean
+          target_price?: number
+          ticker?: string
+          triggered_at?: string | null
           user_id?: string
         }
         Relationships: []
