@@ -48,7 +48,7 @@ type CategoryFilter = "all" | TickerCategory;
 const ANALYSIS_INTERVAL_MIN = 5;
 const INITIAL_VISIBLE = 10;
 const PAGE_SIZE = 10;
-const CCL_CACHE_KEY = "oraculo:ccl_last";
+
 
 function SignalPill({ signal, large = false }: { signal: AssetSignal["signal"] | string; large?: boolean }) {
   const cfg = {
