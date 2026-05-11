@@ -104,7 +104,7 @@ function Dashboard() {
   const [loadingAi, setLoadingAi] = useState(false);
   const [closingId, setClosingId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
-  const [cachedCcl, setCachedCcl] = useState<{ value: number; ts: number } | null>(null);
+  const ccl = useCcl();
 
   // Filters
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
