@@ -1011,6 +1011,22 @@ const OpportunityCard = memoCard(function OpportunityCardImpl({
             </div>
             <span className={`text-xs font-semibold ${riskColor(sig.risk_level)}`}>Riesgo {sig.risk_level}</span>
           </div>
+          {(sig.entry_price_usd > 0 || sig.stop_price_usd > 0 || sig.target_price_usd > 0) && (
+            <div className="grid grid-cols-3 gap-2 mb-3 font-mono text-sm" data-mono>
+              <div className="bg-secondary/50 rounded-lg p-2">
+                <div className="text-[10px] uppercase text-muted-foreground">Entrada</div>
+                <div className="font-bold">{sig.entry_price_usd > 0 ? usd(sig.entry_price_usd) : "—"}</div>
+              </div>
+              <div className="bg-destructive/10 rounded-lg p-2">
+                <div className="text-[10px] uppercase text-muted-foreground">Stop</div>
+                <div className="font-bold text-destructive">{sig.stop_price_usd > 0 ? usd(sig.stop_price_usd) : "—"}</div>
+              </div>
+              <div className="bg-success/10 rounded-lg p-2">
+                <div className="text-[10px] uppercase text-muted-foreground">Target</div>
+                <div className="font-bold text-success">{sig.target_price_usd > 0 ? usd(sig.target_price_usd) : "—"}</div>
+              </div>
+            </div>
+          )}
           <div className="text-xs text-muted-foreground">
             Retorno estimado: <span className="text-foreground font-semibold">{pct(sig.estimated_return_pct)}</span> · {sig.horizon}
           </div>
