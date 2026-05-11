@@ -355,7 +355,7 @@ function Dashboard() {
 
   // ===== Metrics =====
   const score = analysis ? Math.round(analysis.market_score) : 0;
-  const cclMinsAgo = cachedCcl ? Math.max(0, Math.floor((Date.now() - cachedCcl.ts) / 60000)) : null;
+  
   const marketStateLabel = (() => {
     if (!snapshot) return { dot: "bg-muted-foreground", text: "—", sub: "Cargando" };
     if (snapshot.is_open) {
