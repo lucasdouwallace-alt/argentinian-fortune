@@ -206,14 +206,14 @@ function Dashboard() {
       }));
       const a = await fetchAnalysis({
         data: {
-          capital_ars: profile.monthly_capital_ars, mep: snap.mep, ccl: snap.ccl || cachedCcl?.value || 0,
+          capital_ars: profile.monthly_capital_ars, mep: snap.mep, ccl: cclState.effective || snap.ccl || 0,
           quotes, positions: [],
         },
       });
       setAnalysis(a); setAnalysisAt(Date.now());
     } catch (e) { toast.error("Error IA: " + (e as Error).message); }
     finally { setLoadingAi(false); }
-  }, [fetchAnalysis, snapshot, profile, cachedCcl]);
+  }, [fetchAnalysis, snapshot, profile, cclState.effective]);
 
   // Trigger once when first snapshot+profile arrive, and every N minutes thereafter.
   const didAutoRun = useRef(false);
