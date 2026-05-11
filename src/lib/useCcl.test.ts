@@ -115,6 +115,7 @@ describe("useCcl", () => {
     });
     expect(getCclMock.mock.calls.length).toBeGreaterThan(initialCalls);
     expect(result.current.effective).toBe(1555);
+  });
 
   it("polling backoff grows on consecutive failures and resets on recovery", async () => {
     vi.useFakeTimers();
