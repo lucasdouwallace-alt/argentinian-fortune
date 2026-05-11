@@ -28,7 +28,7 @@ const inputSchema = z.object({
 });
 
 export const chatWithOraculo = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([attachSupabaseAuth, requireSupabaseAuth])
   .inputValidator((d: z.infer<typeof inputSchema>) => inputSchema.parse(d))
   .handler(async ({ data }) => {
     const apiKey = process.env.LOVABLE_API_KEY;
