@@ -1,12 +1,22 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { ORACULO_SYSTEM_PROMPT } from "@/lib/oraculoPrompt";
+import { getTechnicalsBatch } from "@/lib/technicals.server";
+import { capsForTicker, type Technicals } from "@/lib/technicals";
+import { getTdIndicators, bbandsPosition, type TdIndicators } from "@/lib/twelvedata.server";
+import { getNews, getSentiment, type FinnhubNews, type FinnhubSentiment } from "@/lib/finnhub.server";
+import { validateSignal } from "@/lib/signalValidator";
+import { macdState, countConditionsBuy, countConditionsSell, missingIndicators } from "@/lib/analyze.helpers";
+import { captureAnalysisIssue } from "@/lib/monitoring";
+import { getCachedAnalysis, setCachedAnalysis } from "@/lib/analysisCache";
 
 const InputSchema = z.object({
   capital_ars: z.number().min(0),
   mep: z.number(),
   ccl: z.number(),
   market_open: z.boolean().optional().default(true),
+  force: z.boolean().optional().default(false),
+  user_id: z.string().optional(),
   quotes: z.array(z.object({
     ticker: z.string(),
     price_usd: z.number(),
@@ -30,14 +40,31 @@ export type AssetSignal = {
   risk_level: "Bajo" | "Medio" | "Alto";
   action_reason: string;
   risk_note: string;
-  // Niveles porcentuales (acciones/CEDEARs): el usuario aplica al precio de Balanz
-  stop_loss_pct: number;   // positivo, ej: 8 → -8%
-  take_profit_pct: number; // positivo, ej: 18 → +18%
-  entry_offset_pct: number; // 0 si COMPRAR ya; negativo si ESPERAR pullback; positivo si breakout
-  // Precios concretos legacy (referencia NYSE; UI muestra %)
+  stop_loss_pct: number;
+  take_profit_pct: number;
+  entry_offset_pct: number;
   entry_price_usd: number;
   stop_price_usd: number;
   target_price_usd: number;
+  rsi?: number | null;
+  rsi_label?: "SOBREVENDIDO" | "NEUTRO" | "SOBRECOMPRADO" | "N/D";
+  macd_state?: "alcista" | "bajista" | "neutro";
+  bb_position?: "upper" | "middle" | "lower";
+  stoch_state?: "oversold" | "neutral" | "overbought";
+  stoch_k?: number | null;
+  conditions_met?: number;
+  key_indicator?: string;
+  bullish_pct?: number;
+  bearish_pct?: number;
+  news_headlines?: string[];
+  volume_label?: "alto" | "normal" | "bajo";
+  above_ma20?: boolean;
+  ma20?: number;
+  relative_volume?: number;
+  change5d_pct?: number | null;
+  technicals_partial?: boolean;
+  target_adjusted?: boolean;
+  data_insufficient?: boolean;
 };
 
 export type MarketAnalysis = {
@@ -46,67 +73,118 @@ export type MarketAnalysis = {
   market_score_label: string;
   estimated_monthly_return_pct: number;
   assets: AssetSignal[];
+  generated_at: string;
+  cache_age_min?: number;
 };
 
 export const analyzeMarket = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => InputSchema.parse(d))
   .handler(async ({ data }): Promise<MarketAnalysis> => {
-    const apiKey = process.env.LOVABLE_API_KEY;
-    if (!apiKey) throw new Error("LOVABLE_API_KEY no configurada");
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error("GEMINI_API_KEY no configurada");
 
-    const prompt = `Analizá estos activos con sus precios reales actuales de Alpaca:
-${data.quotes.map(q => `${q.ticker}: USD ${q.price_usd.toFixed(2)} (${q.change_pct.toFixed(2)}% día)`).join("\n")}
+    // Cache: si no es force refresh y hay un análisis reciente, devolverlo
+    if (!data.force && data.user_id) {
+      const cached = await getCachedAnalysis<MarketAnalysis>(data.user_id, "market");
+      if (cached) {
+        const minutes = Math.round(cached.age_ms / 60_000);
+        console.log(`[analyze] cache hit (${minutes} min old)`);
+        return { ...cached.data, cache_age_min: minutes };
+      }
+    }
 
-CCL actual: $${data.ccl} (ArgentinaDatos) | MEP: $${data.mep}
-Estado del mercado: ${data.market_open ? "abierto" : "cerrado"}
-Capital del usuario: ARS ${data.capital_ars.toLocaleString("es-AR")} (~USD ${(data.capital_ars / (data.mep || 1)).toFixed(0)})
-Posiciones abiertas: ${data.positions.length === 0 ? "ninguna" : data.positions.map(p => `${p.ticker} entry $${p.entry_price_usd} pnl ${p.pnl_pct.toFixed(2)}%`).join("; ")}
+    const tickers = data.quotes.map((q) => q.ticker);
 
-Para cada activo dame la orden con PORCENTAJES (no precios USD exactos: el usuario opera CEDEARs en BYMA cuyo precio difiere de NYSE).
-- Solo activos con probability_pct > 60.
-- Ordenados de MAYOR a MENOR probability_pct.
-- Máximo 10 activos.
-- stop_loss_pct y take_profit_pct son siempre POSITIVOS (la dirección la define el campo signal).
-- horizon_days entre 3 y 10 (apuntá a ~5 días, una semana).
-- Para COMPRAR: entry_offset_pct = 0.
-- Para ESPERAR: entry_offset_pct = % desde precio actual al que conviene entrar (negativo si esperás pullback, positivo si breakout).
+    const [tdMap, newsMap, sentMap, alpacaTech] = await Promise.all([
+      Promise.all(tickers.map(async (t) => [t, await getTdIndicators(t)] as const))
+        .then((arr) => Object.fromEntries(arr) as Record<string, TdIndicators>),
+      Promise.all(tickers.map(async (t) => [t, await getNews(t)] as const))
+        .then((arr) => Object.fromEntries(arr) as Record<string, FinnhubNews[]>),
+      Promise.all(tickers.map(async (t) => [t, await getSentiment(t)] as const))
+        .then((arr) => Object.fromEntries(arr) as Record<string, FinnhubSentiment | null>),
+      getTechnicalsBatch(tickers).catch(() => ({} as Record<string, Technicals>)),
+    ]);
+
+    for (const t of tickers) {
+      const missing = missingIndicators(tdMap[t]);
+      if (missing.length > 0) {
+        captureAnalysisIssue({ ticker: t, missing, stage: "fetch" });
+      }
+    }
+
+    const lines = data.quotes.map((q) => {
+      const td = tdMap[q.ticker];
+      const sent = sentMap[q.ticker];
+      const news = newsMap[q.ticker] || [];
+      const caps = capsForTicker(q.ticker);
+      const bb = td?.bbands ? bbandsPosition(td.bbands, q.price_usd) : null;
+      const cBuy = countConditionsBuy(td, sent, bb?.position ?? null);
+      const cSell = countConditionsSell(td, bb?.position ?? null);
+      const ms = macdState(td);
+      const headlines = news.slice(0, 2).map((n) => n.headline.slice(0, 80)).join(" | ") || "sin noticias";
+      return `${q.ticker} [${caps.categoryLabel} SLmax ${caps.slMax}% TPmax ${caps.tpMax}%] $${q.price_usd.toFixed(2)} (${q.change_pct.toFixed(2)}%) `
+        + `| RSI ${td?.rsi?.rsi ?? "N/D"} | MACD ${ms}${td?.macd ? ` (${td.macd.macd.toFixed(3)}/${td.macd.macd_signal.toFixed(3)})` : ""} `
+        + `| BB ${bb?.position ?? "N/D"}${bb ? ` (lo ${bb.lower_band.toFixed(2)}/up ${bb.upper_band.toFixed(2)})` : ""} `
+        + `| Stoch K ${td?.stoch?.slow_k.toFixed(1) ?? "N/D"} (${td?.stoch?.state ?? "N/D"}) `
+        + `| Sent bull ${sent?.bullishPercent ?? "N/D"}% / bear ${sent?.bearishPercent ?? "N/D"}% `
+        + `| Cond buy ${cBuy}/5 sell ${cSell}/4 `
+        + `| News: ${headlines}`;
+    }).join("\n");
+
+    const prompt = `Análisis cuantitativo profesional con datos REALES.
+Cada activo trae RSI(14), MACD(12,26,9), BB(20,2), Stochastic — todos pre-calculados por Twelve Data.
+Sentiment y noticias de Finnhub.
+
+${lines}
+
+CCL: $${data.ccl} | MEP: $${data.mep} | Mercado: ${data.market_open ? "abierto" : "cerrado"}
+Capital usuario: ARS ${data.capital_ars.toLocaleString("es-AR")}
+Posiciones abiertas: ${data.positions.length === 0 ? "ninguna" : data.positions.map(p => `${p.ticker} pnl ${p.pnl_pct.toFixed(2)}%`).join("; ")}
+
+REGLAS ESTRICTAS:
+- COMPRAR requiere ≥3 condiciones cumplidas (ver "Cond buy" arriba).
+- VENDER requiere ≥2 condiciones de venta cumplidas.
+- ESPERAR el resto, pero NUNCA más del 60% de los activos.
+- Probabilidad debe reflejar las condiciones reales (4-5 = 78-88%, 3 = 65-77%, 2 = 55-65%).
+- stop_loss_pct y take_profit_pct positivos, DEBEN respetar SLmax/TPmax por categoría.
+- Mínimo 2-3 activos COMPRAR/VENDER. Ordenados por probability_pct desc.
+- En "reason" mencioná los indicadores reales y cuántas condiciones se cumplieron.
 
 Respondé SOLO JSON válido sin texto extra ni backticks:
 {
-  "market_context": "2-3 oraciones sobre el mercado hoy",
+  "market_context": "2-3 oraciones",
   "market_score": 0-100,
   "market_score_label": "ej: Favorable",
   "estimated_monthly_return_pct": número,
   "assets": [
     {
-      "ticker":"VIST",
-      "signal":"COMPRAR|VENDER|ESPERAR",
-      "confidence":60-92,
-      "probability_pct":60-92,
+      "ticker": "NVDA",
+      "signal": "COMPRAR|VENDER|ESPERAR",
+      "confidence": 50-92,
+      "probability_pct": 50-92,
       "estimated_return_pct": número,
-      "horizon":"ej: 5 días hábiles",
+      "horizon": "5 días hábiles",
       "horizon_days": 5,
-      "risk_level":"Bajo|Medio|Alto",
-      "stop_loss_pct": número positivo (ej 8 = -8%),
-      "take_profit_pct": número positivo (ej 18 = +18%),
-      "entry_offset_pct": número (0 si COMPRAR ya, negativo si esperás pullback),
-      "entry_price_usd": número (precio NYSE de referencia, opcional),
+      "risk_level": "Bajo|Medio|Alto",
+      "stop_loss_pct": número positivo (≤ SLmax),
+      "take_profit_pct": número positivo (≤ TPmax),
+      "entry_offset_pct": 0,
+      "entry_price_usd": precio referencia,
       "stop_price_usd": 0,
       "target_price_usd": 0,
-      "action_reason":"máximo 15 palabras, una sola razón concreta",
-      "risk_note":"breve"
+      "conditions_met": 0-5,
+      "key_indicator": "el más determinante",
+      "action_reason": "15 palabras citando indicadores reales",
+      "risk_note": "breve"
     }
   ]
 }`;
 
-    const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "gemini-2.0-flash",
         temperature: 0.1,
         messages: [
           { role: "system", content: ORACULO_SYSTEM_PROMPT + "\n\nIMPORTANTE: para esta llamada respondé SOLO JSON válido (sin el formato visual ⚡), siguiendo el schema pedido." },
@@ -116,42 +194,126 @@ Respondé SOLO JSON válido sin texto extra ni backticks:
     });
 
     if (r.status === 429) throw new Error("Límite de requests alcanzado, esperá un momento.");
-    if (r.status === 402) throw new Error("Sin créditos en Lovable AI. Recargá en Settings → Workspace → Usage.");
-    if (!r.ok) {
-      const t = await r.text();
-      throw new Error(`Gemini ${r.status}: ${t}`);
-    }
+    if (r.status === 402) throw new Error("Sin créditos en Gemini. Revisá tu quota en Google AI Studio.");
+    if (!r.ok) throw new Error(`Gemini ${r.status}: ${await r.text()}`);
+
     const j = (await r.json()) as { choices: Array<{ message: { content: string } }> };
     let text = j.choices[0]?.message?.content || "{}";
     text = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     if (start >= 0 && end > start) text = text.slice(start, end + 1);
+
+    let parsed: MarketAnalysis;
     try {
-      const parsed = JSON.parse(text) as MarketAnalysis;
-      // Defaults defensivos.
-      parsed.assets = (parsed.assets || []).map((a) => {
-        const px = Number(a.entry_price_usd) || 0;
-        const sl = Number(a.stop_loss_pct) || 8;
-        const tp = Number(a.take_profit_pct) || 15;
-        const offset = Number(a.entry_offset_pct) || 0;
-        const days = Number(a.horizon_days) || 5;
-        return {
-          ...a,
-          stop_loss_pct: Math.abs(sl),
-          take_profit_pct: Math.abs(tp),
-          entry_offset_pct: offset,
-          horizon_days: days,
-          horizon: a.horizon || `${days} días hábiles`,
-          entry_price_usd: px,
-          stop_price_usd: Number(a.stop_price_usd) || (px ? +(px * (1 - Math.abs(sl) / 100)).toFixed(2) : 0),
-          target_price_usd: Number(a.target_price_usd) || (px ? +(px * (1 + Math.abs(tp) / 100)).toFixed(2) : 0),
-        };
-      });
-      parsed.assets.sort((a, b) => (b.probability_pct || 0) - (a.probability_pct || 0));
-      return parsed;
+      parsed = JSON.parse(text) as MarketAnalysis;
     } catch {
-      console.error("parse failed", text);
+      console.error("[analyze] parse failed", text);
       throw new Error("La IA devolvió un formato inválido");
     }
+
+    parsed.assets = (parsed.assets || []).map((a) => {
+      const td = tdMap[a.ticker];
+      const sent = sentMap[a.ticker];
+      const news = newsMap[a.ticker] || [];
+      const tech = alpacaTech[a.ticker];
+      const bb = td?.bbands ? bbandsPosition(td.bbands, a.entry_price_usd || 0) : null;
+      const validated: { signal: AssetSignal["signal"]; probability_pct: number; stop_loss_pct: number; take_profit_pct: number; target_adjusted?: boolean } = validateSignal({
+        signal: a.signal,
+        probability_pct: Number(a.probability_pct) || 50,
+        stop_loss_pct: Number(a.stop_loss_pct) || 5,
+        take_profit_pct: Number(a.take_profit_pct) || 5,
+      }, a.ticker);
+      const px = Number(a.entry_price_usd) || 0;
+      const sl = validated.stop_loss_pct;
+      const tp = validated.take_profit_pct;
+      const cBuy = countConditionsBuy(td, sent, bb?.position ?? null);
+      const cSell = countConditionsSell(td, bb?.position ?? null);
+      return {
+        ...a,
+        stop_loss_pct: sl,
+        take_profit_pct: tp,
+        target_adjusted: validated.target_adjusted,
+        entry_offset_pct: Number(a.entry_offset_pct) || 0,
+        horizon_days: Number(a.horizon_days) || 5,
+        horizon: a.horizon || `${Number(a.horizon_days) || 5} días hábiles`,
+        entry_price_usd: px,
+        stop_price_usd: Number(a.stop_price_usd) || (px ? +(px * (1 - sl / 100)).toFixed(2) : 0),
+        target_price_usd: Number(a.target_price_usd) || (px ? +(px * (1 + tp / 100)).toFixed(2) : 0),
+        rsi: td?.rsi?.rsi ?? null,
+        rsi_label: td?.rsi
+          ? (td.rsi.rsi > 70 ? "SOBRECOMPRADO" : td.rsi.rsi < 30 ? "SOBREVENDIDO" : "NEUTRO")
+          : "N/D",
+        macd_state: macdState(td),
+        bb_position: bb?.position,
+        stoch_state: td?.stoch?.state,
+        stoch_k: td?.stoch?.slow_k ?? null,
+        conditions_met: a.signal === "VENDER" ? cSell : cBuy,
+        bullish_pct: sent?.bullishPercent,
+        bearish_pct: sent?.bearishPercent,
+        news_headlines: news.slice(0, 3).map((n) => n.headline),
+        volume_label: tech?.volumeLabel,
+        above_ma20: tech?.aboveMA20,
+        ma20: tech?.ma20,
+        relative_volume: tech?.relativeVolume,
+        change5d_pct: tech?.change5dPct ?? null,
+        technicals_partial: !td?.rsi,
+      };
+    });
+
+    parsed.assets.sort((a, b) => (b.probability_pct || 0) - (a.probability_pct || 0));
+    parsed.assets = enforceSignalDistribution(parsed.assets);
+    parsed.generated_at = new Date().toISOString();
+
+    // Guardar en cache
+    if (data.user_id) {
+      await setCachedAnalysis(data.user_id, "market", parsed);
+    }
+
+    return parsed;
   });
+
+export function enforceSignalDistribution(assets: AssetSignal[]): AssetSignal[] {
+  if (!assets.length) return assets;
+  return [...assets].sort((a, b) => (b.probability_pct || 0) - (a.probability_pct || 0));
+}
+
+export function partitionByTechnicals<Q extends { ticker: string }>(
+  quotes: Q[],
+  technicals: Record<string, { rsi: number | null } | undefined>,
+): { sufficient: Q[]; insufficient: Q[] } {
+  const sufficient: Q[] = [];
+  const insufficient: Q[] = [];
+  for (const q of quotes) {
+    const t = technicals[q.ticker];
+    if (t && t.rsi != null) sufficient.push(q);
+    else insufficient.push(q);
+  }
+  return { sufficient, insufficient };
+}
+
+export function buildInsufficientSignal(ticker: string, price_usd: number): AssetSignal {
+  const caps = capsForTicker(ticker);
+  return {
+    ticker,
+    signal: "ESPERAR",
+    confidence: 50,
+    probability_pct: 50,
+    estimated_return_pct: 0,
+    horizon: "Sin datos",
+    horizon_days: 5,
+    risk_level: "Medio",
+    action_reason: "Sin datos técnicos suficientes para generar una señal honesta.",
+    risk_note: "No operes sin indicadores reales.",
+    stop_loss_pct: caps.slMax,
+    take_profit_pct: caps.tpMax,
+    entry_offset_pct: 0,
+    entry_price_usd: price_usd,
+    stop_price_usd: price_usd ? +(price_usd * (1 - caps.slMax / 100)).toFixed(2) : 0,
+    target_price_usd: price_usd ? +(price_usd * (1 + caps.tpMax / 100)).toFixed(2) : 0,
+    rsi: null,
+    rsi_label: "N/D",
+    technicals_partial: true,
+    data_insufficient: true,
+  };
+}
