@@ -11,7 +11,6 @@ import { toast } from "sonner";
 import { usd } from "@/lib/format";
 import { Bell, RefreshCw, TrendingUp, TrendingDown, X, Trash2, CheckCircle2, XCircle } from "lucide-react";
 
-
 type Alert = { id: string; ticker: string; target_price: number; direction: "above" | "below"; is_triggered: boolean; created_at: string };
 type Trade = {
   id: string; ticker: string; signal: string;
@@ -96,20 +95,20 @@ export function CryptoTab() {
     runAnalysis();
   }, [quotes, runAnalysis]);
 
-  // alerts + trades
   const reloadAlerts = useCallback(async () => {
     if (!user) return;
     const { data } = await supabase.from("price_alerts").select("*").eq("user_id", user.id).order("created_at", { ascending: false });
     setAlerts((data || []) as Alert[]);
   }, [user]);
+
   const reloadTrades = useCallback(async () => {
     if (!user) return;
     const { data } = await supabase.from("crypto_trades").select("*").eq("user_id", user.id).order("created_at", { ascending: false }).limit(100);
     setTrades((data || []) as Trade[]);
   }, [user]);
+
   useEffect(() => { reloadAlerts(); reloadTrades(); }, [reloadAlerts, reloadTrades]);
 
-  // alert triggering check
   const triggeredRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!alerts.length || !quotes.length) return;
@@ -130,9 +129,7 @@ export function CryptoTab() {
   const sigByTicker = useMemo(() => new Map(signals.map((s) => [s.ticker, s])), [signals]);
   const selectedQuote = quotes.find((q) => q.ticker === selected);
   const selectedSig = selected ? sigByTicker.get(selected) : null;
-
   const topThree = quotes.slice(0, 3);
-
   const wonTrades = trades.filter((t) => t.status === "won").length;
   const closedTrades = trades.filter((t) => t.status !== "open").length;
   const totalPnl = trades.reduce((a, t) => a + (Number(t.pnl_usd) || 0), 0);
@@ -140,7 +137,6 @@ export function CryptoTab() {
 
   return (
     <div className="space-y-4">
-      {/* Top bar */}
       <div className="bg-card border rounded-xl p-3 shadow-card flex flex-wrap items-center gap-3 text-sm">
         {topThree.map((q) => (
           <div key={q.ticker} className="font-mono px-2.5 py-1 rounded-lg bg-secondary/50 inline-flex items-center gap-2" data-mono>
@@ -172,7 +168,6 @@ export function CryptoTab() {
         </Button>
       </div>
 
-      {/* View tabs */}
       <div className="flex gap-2">
         <Button size="sm" variant={view === "signals" ? "default" : "outline"} onClick={() => setView("signals")}>Señales</Button>
         <Button size="sm" variant={view === "trades" ? "default" : "outline"} onClick={() => setView("trades")}>
@@ -182,7 +177,6 @@ export function CryptoTab() {
 
       {view === "signals" && (
         <div className="grid lg:grid-cols-[1fr_360px] gap-4">
-          {/* Table */}
           <div className="bg-card border rounded-xl shadow-card overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -199,11 +193,9 @@ export function CryptoTab() {
                 </thead>
                 <tbody>
                   {quotes.length === 0 && (
-                    <>
-                      {[1,2,3,4,5].map((i) => (
-                        <tr key={i}><td colSpan={7} className="p-2"><Skeleton className="h-8 w-full" /></td></tr>
-                      ))}
-                    </>
+                    <>{[1,2,3,4,5].map((i) => (
+                      <tr key={i}><td colSpan={7} className="p-2"><Skeleton className="h-8 w-full" /></td></tr>
+                    ))}</>
                   )}
                   {quotes.map((q) => {
                     const sig = sigByTicker.get(q.ticker);
@@ -252,7 +244,6 @@ export function CryptoTab() {
             </div>
           </div>
 
-          {/* Side panel */}
           <aside className="bg-card border rounded-xl shadow-card p-4 space-y-3 h-fit lg:sticky lg:top-20">
             {!selected || !selectedQuote ? (
               <div className="text-sm text-muted-foreground text-center py-10">
@@ -273,7 +264,6 @@ export function CryptoTab() {
                 <div className={`text-xs font-mono ${selectedQuote.change_24h_pct >= 0 ? "text-success" : "text-destructive"}`} data-mono>
                   {selectedQuote.change_24h_pct >= 0 ? "+" : ""}{selectedQuote.change_24h_pct.toFixed(2)}% (24h)
                 </div>
-
                 {selectedSig && (
                   <>
                     <div className={`mt-2 p-3 rounded-lg ${selectedSig.signal === "COMPRAR" ? "bg-success/15 border border-success/40" : selectedSig.signal === "VENDER" ? "bg-destructive/15 border border-destructive/40" : "bg-warning/15 border border-warning/40"}`}>
@@ -307,7 +297,6 @@ export function CryptoTab() {
                     }} />
                   </>
                 )}
-<CryptoChartLive symbol={`${selectedQuote.ticker}/USD`} ticker={selectedQuote.ticker} />
                 <PriceAlertForm ticker={selectedQuote.ticker} currentPrice={selectedQuote.price_usd} userId={user?.id} onCreated={reloadAlerts} />
                 <ExistingAlerts alerts={alerts.filter((a) => a.ticker === selectedQuote.ticker)} onDelete={async (id) => {
                   await supabase.from("price_alerts").delete().eq("id", id);
@@ -342,7 +331,7 @@ export function CryptoTab() {
                 </thead>
                 <tbody>
                   {trades.length === 0 && (
-                    <tr><td colSpan={7} className="text-center text-muted-foreground py-8">Sin trades guardados todavía. Hacé click en una señal y guardala.</td></tr>
+                    <tr><td colSpan={7} className="text-center text-muted-foreground py-8">Sin trades guardados todavía.</td></tr>
                   )}
                   {trades.map((t) => {
                     const open = t.status === "open";
@@ -418,7 +407,6 @@ function PositionCalculator({ sig, onSaveTrade }: { sig: CryptoSignal; onSaveTra
   const winPct = sig.target_pct;
   const losePct = sig.stop_pct;
   const ratio = ratioBadge(sig.stop_price_usd, sig.target_price_usd, sig.entry_price_usd);
-
   return (
     <div className="border-t pt-3">
       <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">💵 Calculadora de posición</div>
@@ -439,9 +427,7 @@ function PositionCalculator({ sig, onSaveTrade }: { sig: CryptoSignal; onSaveTra
             <span className="font-bold text-destructive">{usd(loseUsd)} <span className="text-xs">({losePct.toFixed(1)}%)</span></span>
           </div>
           {ratio && <div className={`text-xs ${ratio.cls}`}>Riesgo/beneficio: {ratio.label}</div>}
-          <Button size="sm" className="w-full mt-2" onClick={() => onSaveTrade(cap)}>
-            Guardar como trade
-          </Button>
+          <Button size="sm" className="w-full mt-2" onClick={() => onSaveTrade(cap)}>Guardar como trade</Button>
         </div>
       )}
     </div>
