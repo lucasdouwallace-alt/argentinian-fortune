@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { usd } from "@/lib/format";
 import { Bell, RefreshCw, TrendingUp, TrendingDown, X, Trash2, CheckCircle2, XCircle } from "lucide-react";
 
+
 type Alert = { id: string; ticker: string; target_price: number; direction: "above" | "below"; is_triggered: boolean; created_at: string };
 type Trade = {
   id: string; ticker: string; signal: string;
@@ -306,7 +307,7 @@ export function CryptoTab() {
                     }} />
                   </>
                 )}
-
+<CryptoChartLive symbol={`${selectedQuote.ticker}/USD`} ticker={selectedQuote.ticker} />
                 <PriceAlertForm ticker={selectedQuote.ticker} currentPrice={selectedQuote.price_usd} userId={user?.id} onCreated={reloadAlerts} />
                 <ExistingAlerts alerts={alerts.filter((a) => a.ticker === selectedQuote.ticker)} onDelete={async (id) => {
                   await supabase.from("price_alerts").delete().eq("id", id);
