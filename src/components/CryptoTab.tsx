@@ -56,10 +56,15 @@ export function CryptoTab() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [view, setView] = useState<"signals" | "trades">("signals");
 
+  const snapRef = useRef(fetchSnap);
+  const analysisRef = useRef(fetchAnalysis);
+  useEffect(() => { snapRef.current = fetchSnap; });
+  useEffect(() => { analysisRef.current = fetchAnalysis; });
+
   const reloadSnap = useCallback(async () => {
     setLoadingSnap(true);
     try {
-      const s = await fetchSnap();
+      const s = await snapRef.current();
       setQuotes(s.quotes);
       setMarket(s.market);
     } catch (e) {
@@ -67,12 +72,12 @@ export function CryptoTab() {
     } finally {
       setLoadingSnap(false);
     }
-  }, [fetchSnap]);
+  }, []);
 
   const runAnalysis = useCallback(async () => {
     setLoadingAi(true);
     try {
-      const a = await fetchAnalysis();
+      const a = await analysisRef.current();
       setSignals(a.signals);
       setMarket(a.market);
     } catch (e) {
@@ -80,20 +85,20 @@ export function CryptoTab() {
     } finally {
       setLoadingAi(false);
     }
-  }, [fetchAnalysis]);
+  }, []);
 
-  useEffect(() => { reloadSnap(); }, [reloadSnap]);
+  useEffect(() => { reloadSnap(); }, []);
   useEffect(() => {
-    const id = setInterval(reloadSnap, POLL_MS);
+    const id = setInterval(() => reloadSnap(), POLL_MS);
     return () => clearInterval(id);
-  }, [reloadSnap]);
+  }, []);
 
   const didAuto = useRef(false);
   useEffect(() => {
     if (!quotes.length || didAuto.current) return;
     didAuto.current = true;
     runAnalysis();
-  }, [quotes, runAnalysis]);
+  }, [quotes]);
 
   const reloadAlerts = useCallback(async () => {
     if (!user) return;
@@ -107,7 +112,7 @@ export function CryptoTab() {
     setTrades((data || []) as Trade[]);
   }, [user]);
 
-  useEffect(() => { reloadAlerts(); reloadTrades(); }, [reloadAlerts, reloadTrades]);
+  useEffect(() => { reloadAlerts(); reloadTrades(); }, [user]);
 
   const triggeredRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -124,7 +129,7 @@ export function CryptoTab() {
         supabase.from("price_alerts").update({ is_triggered: true, triggered_at: new Date().toISOString() }).eq("id", a.id).then(() => reloadAlerts());
       }
     }
-  }, [alerts, quotes, reloadAlerts]);
+  }, [alerts, quotes]);
 
   const sigByTicker = useMemo(() => new Map(signals.map((s) => [s.ticker, s])), [signals]);
   const selectedQuote = quotes.find((q) => q.ticker === selected);
