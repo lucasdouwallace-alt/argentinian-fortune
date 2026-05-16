@@ -8,6 +8,7 @@ import { getNews, getSentiment, type FinnhubNews, type FinnhubSentiment } from "
 import { validateSignal } from "@/lib/signalValidator";
 import { macdState, countConditionsBuy, countConditionsSell, missingIndicators } from "@/lib/analyze.helpers";
 import { captureAnalysisIssue } from "@/lib/monitoring";
+import { queueGeminiCall } from "@/lib/geminiQueue";
 import { getCachedAnalysis, setCachedAnalysis } from "@/lib/analysisCache";
 
 const InputSchema = z.object({
@@ -83,7 +84,7 @@ export const analyzeMarket = createServerFn({ method: "POST" })
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY no configurada");
 
-    // Cache: si no es force refresh y hay un análisis reciente, devolverlo
+    // Cache: si no es force refresh, devolver análisis reciente
     if (!data.force && data.user_id) {
       const cached = await getCachedAnalysis<MarketAnalysis>(data.user_id, "market");
       if (cached) {
@@ -146,7 +147,7 @@ REGLAS ESTRICTAS:
 - VENDER requiere ≥2 condiciones de venta cumplidas.
 - ESPERAR el resto, pero NUNCA más del 60% de los activos.
 - Probabilidad debe reflejar las condiciones reales (4-5 = 78-88%, 3 = 65-77%, 2 = 55-65%).
-- stop_loss_pct y take_profit_pct positivos, DEBEN respetar SLmax/TPmax por categoría.
+- stop_loss_pct y take_profit_pct positivos (la dirección la define signal), DEBEN respetar SLmax/TPmax por categoría.
 - Mínimo 2-3 activos COMPRAR/VENDER. Ordenados por probability_pct desc.
 - En "reason" mencioná los indicadores reales y cuántas condiciones se cumplieron.
 
@@ -180,7 +181,7 @@ Respondé SOLO JSON válido sin texto extra ni backticks:
   ]
 }`;
 
-    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
+    const callGemini = () => queueGeminiCall(() => fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -191,11 +192,35 @@ Respondé SOLO JSON válido sin texto extra ni backticks:
           { role: "user", content: prompt },
         ],
       }),
-    });
+    }));
 
-    if (r.status === 429) throw new Error("Límite de requests alcanzado, esperá un momento.");
-    if (r.status === 402) throw new Error("Sin créditos en Gemini. Revisá tu quota en Google AI Studio.");
-    if (!r.ok) throw new Error(`Gemini ${r.status}: ${await r.text()}`);
+    // Reintentos con backoff exponencial ante 429
+    let r = await callGemini();
+    const delays = [3000, 7000, 15000];
+    for (const d of delays) {
+      if (r.status !== 429) break;
+      await new Promise((res) => setTimeout(res, d));
+      r = await callGemini();
+    }
+
+    // Si después de los reintentos sigue fallando, devolvemos fallback (no crash)
+    if (r.status === 429 || r.status === 402 || !r.ok) {
+      const reason = r.status === 429
+        ? "Gemini saturado (free tier). Reintentá en ~60s."
+        : r.status === 402
+          ? "Sin créditos en Gemini."
+          : `Gemini ${r.status}`;
+      console.error("[analyze] fallback:", reason);
+      return {
+        market_context: `Análisis IA no disponible: ${reason} Mostrando indicadores técnicos sin recomendación.`,
+        market_score: 50,
+        market_score_label: "Sin datos IA",
+        estimated_monthly_return_pct: 0,
+        assets: data.quotes.map((q) => buildInsufficientSignal(q.ticker, q.price_usd)),
+        generated_at: new Date().toISOString(),
+      };
+    }
+
 
     const j = (await r.json()) as { choices: Array<{ message: { content: string } }> };
     let text = j.choices[0]?.message?.content || "{}";
@@ -223,6 +248,7 @@ Respondé SOLO JSON válido sin texto extra ni backticks:
         probability_pct: Number(a.probability_pct) || 50,
         stop_loss_pct: Number(a.stop_loss_pct) || 5,
         take_profit_pct: Number(a.take_profit_pct) || 5,
+        target_adjusted: false,
       }, a.ticker);
       const px = Number(a.entry_price_usd) || 0;
       const sl = validated.stop_loss_pct;
