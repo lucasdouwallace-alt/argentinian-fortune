@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { usd } from "@/lib/format";
 import { Bell, RefreshCw, TrendingUp, TrendingDown, X, Trash2, CheckCircle2, XCircle } from "lucide-react";
+import { TradingViewChart } from "@/components/TradingViewChart";
 
 type Alert = { id: string; ticker: string; target_price: number; direction: "above" | "below"; is_triggered: boolean; created_at: string };
 type Trade = {
@@ -46,6 +47,11 @@ export function CryptoTab() {
   const fetchSnap = useServerFn(getCryptoSnapshot);
   const fetchAnalysis = useServerFn(analyzeCrypto);
 
+  const snapRef = useRef(fetchSnap);
+  const analysisRef = useRef(fetchAnalysis);
+  snapRef.current = fetchSnap;
+  analysisRef.current = fetchAnalysis;
+
   const [quotes, setQuotes] = useState<CryptoQuote[]>([]);
   const [market, setMarket] = useState<CryptoMarket | null>(null);
   const [signals, setSignals] = useState<CryptoSignal[]>([]);
@@ -55,11 +61,9 @@ export function CryptoTab() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [view, setView] = useState<"signals" | "trades">("signals");
-
-  const snapRef = useRef(fetchSnap);
-  const analysisRef = useRef(fetchAnalysis);
-  useEffect(() => { snapRef.current = fetchSnap; });
-  useEffect(() => { analysisRef.current = fetchAnalysis; });
+  const [cacheAge, setCacheAge] = useState<number | null>(null);
+  const userRef = useRef(user);
+  userRef.current = user;
 
   const reloadSnap = useCallback(async () => {
     setLoadingSnap(true);
@@ -67,24 +71,20 @@ export function CryptoTab() {
       const s = await snapRef.current();
       setQuotes(s.quotes);
       setMarket(s.market);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoadingSnap(false);
-    }
+    } catch (e) { console.error(e); }
+    finally { setLoadingSnap(false); }
   }, []);
 
-  const runAnalysis = useCallback(async () => {
+  const runAnalysis = useCallback(async (force = false) => {
     setLoadingAi(true);
     try {
-      const a = await analysisRef.current();
+      const a = await analysisRef.current({ data: { force, user_id: userRef.current?.id } });
       setSignals(a.signals);
       setMarket(a.market);
+      setCacheAge(a.cache_age_min ?? null);
     } catch (e) {
       toast.error("Error análisis crypto: " + (e as Error).message);
-    } finally {
-      setLoadingAi(false);
-    }
+    } finally { setLoadingAi(false); }
   }, []);
 
   useEffect(() => { reloadSnap(); }, []);
@@ -97,22 +97,24 @@ export function CryptoTab() {
   useEffect(() => {
     if (!quotes.length || didAuto.current) return;
     didAuto.current = true;
-    runAnalysis();
+    runAnalysis(false);
   }, [quotes]);
 
   const reloadAlerts = useCallback(async () => {
-    if (!user) return;
-    const { data } = await supabase.from("price_alerts").select("*").eq("user_id", user.id).order("created_at", { ascending: false });
+    const u = userRef.current;
+    if (!u) return;
+    const { data } = await supabase.from("price_alerts").select("*").eq("user_id", u.id).order("created_at", { ascending: false });
     setAlerts((data || []) as Alert[]);
-  }, [user]);
+  }, []);
 
   const reloadTrades = useCallback(async () => {
-    if (!user) return;
-    const { data } = await supabase.from("crypto_trades").select("*").eq("user_id", user.id).order("created_at", { ascending: false }).limit(100);
+    const u = userRef.current;
+    if (!u) return;
+    const { data } = await supabase.from("crypto_trades").select("*").eq("user_id", u.id).order("created_at", { ascending: false }).limit(100);
     setTrades((data || []) as Trade[]);
-  }, [user]);
+  }, []);
 
-  useEffect(() => { reloadAlerts(); reloadTrades(); }, [user]);
+  useEffect(() => { reloadAlerts(); reloadTrades(); }, [user?.id]);
 
   const triggeredRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -125,7 +127,7 @@ export function CryptoTab() {
       const hit = a.direction === "above" ? cur >= Number(a.target_price) : cur <= Number(a.target_price);
       if (hit) {
         triggeredRef.current.add(a.id);
-        toast.success(`🔔 ${a.ticker} ${a.direction === "above" ? "subió a" : "bajó a"} ${usd(cur)} (objetivo ${usd(Number(a.target_price))})`);
+        toast.success(`🔔 ${a.ticker} ${a.direction === "above" ? "subió a" : "bajó a"} ${usd(cur)}`);
         supabase.from("price_alerts").update({ is_triggered: true, triggered_at: new Date().toISOString() }).eq("id", a.id).then(() => reloadAlerts());
       }
     }
@@ -144,7 +146,7 @@ export function CryptoTab() {
     <div className="space-y-4">
       <div className="bg-card border rounded-xl p-3 shadow-card flex flex-wrap items-center gap-3 text-sm">
         {topThree.map((q) => (
-          <div key={q.ticker} className="font-mono px-2.5 py-1 rounded-lg bg-secondary/50 inline-flex items-center gap-2" data-mono>
+          <div key={q.ticker} className="font-mono px-2.5 py-1 rounded-lg bg-secondary/50 inline-flex items-center gap-2">
             <span className="font-bold">{q.ticker}</span>
             <span>{q.price_usd > 0 ? usd(q.price_usd) : "—"}</span>
             {q.change_24h_pct !== 0 && (
@@ -161,15 +163,16 @@ export function CryptoTab() {
           </span>
         )}
         {market?.btc_dominance != null && (
-          <span className="px-2 py-1 rounded-lg border border-border bg-secondary/30 text-xs font-mono" data-mono>
+          <span className="px-2 py-1 rounded-lg border border-border bg-secondary/30 text-xs font-mono">
             BTC Dom: {market.btc_dominance.toFixed(2)}%
           </span>
         )}
         <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-success">
           <span className="size-1.5 rounded-full bg-success animate-pulse" /> LIVE 24/7
         </span>
-        <Button size="sm" variant="ghost" disabled={loadingSnap || loadingAi} onClick={() => { reloadSnap(); runAnalysis(); }}>
-          <RefreshCw className={`size-3.5 mr-1 ${loadingSnap || loadingAi ? "animate-spin" : ""}`} /> Actualizar
+        <Button size="sm" variant="ghost" disabled={loadingSnap || loadingAi} onClick={() => { reloadSnap(); runAnalysis(true); }}>
+          <RefreshCw className={`size-3.5 mr-1 ${loadingSnap || loadingAi ? "animate-spin" : ""}`} />
+          {cacheAge != null && cacheAge > 0 ? `Análisis de hace ${cacheAge} min` : "Actualizar"}
         </Button>
       </div>
 
@@ -181,135 +184,118 @@ export function CryptoTab() {
       </div>
 
       {view === "signals" && (
-        <div className="grid lg:grid-cols-[1fr_360px] gap-4">
-          <div className="bg-card border rounded-xl shadow-card overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-secondary/40 text-xs uppercase text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Crypto</th>
-                    <th className="px-3 py-2 text-right">Precio USD</th>
-                    <th className="px-3 py-2 text-right">24h%</th>
-                    <th className="px-3 py-2 text-center">Señal</th>
-                    <th className="px-3 py-2 text-right hidden md:table-cell">Stop</th>
-                    <th className="px-3 py-2 text-right hidden md:table-cell">Target</th>
-                    <th className="px-3 py-2 text-left hidden lg:table-cell">Plazo</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {quotes.length === 0 && (
-                    <>{[1,2,3,4,5].map((i) => (
-                      <tr key={i}><td colSpan={7} className="p-2"><Skeleton className="h-8 w-full" /></td></tr>
-                    ))}</>
-                  )}
-                  {quotes.map((q) => {
-                    const sig = sigByTicker.get(q.ticker);
-                    const isSel = selected === q.ticker;
-                    const sigCls = sig?.signal === "COMPRAR" ? "bg-success text-background"
-                      : sig?.signal === "VENDER" ? "bg-destructive text-destructive-foreground"
-                      : sig?.signal === "ESPERAR" ? "bg-warning text-background" : "bg-muted text-muted-foreground";
-                    return (
-                      <tr key={q.ticker} onClick={() => setSelected(q.ticker)} className={`border-t cursor-pointer hover:bg-secondary/30 transition-colors ${isSel ? "bg-secondary/40" : ""}`}>
-                        <td className="px-3 py-3">
-                          <div className="font-bold">{q.ticker}</div>
-                          <div className="text-xs text-muted-foreground">{q.name}</div>
-                        </td>
-                        <td className="px-3 py-3 text-right font-mono font-semibold" data-mono>{q.price_usd > 0 ? usd(q.price_usd) : "—"}</td>
-                        <td className={`px-3 py-3 text-right font-mono text-xs ${q.change_24h_pct >= 0 ? "text-success" : "text-destructive"}`} data-mono>
-                          {q.change_24h_pct >= 0 ? "+" : ""}{q.change_24h_pct.toFixed(2)}%
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          {sig ? (
-                            <span className={`inline-block px-3 py-1 rounded-md text-xs font-extrabold uppercase tracking-wide ${sigCls}`}>
-                              {sig.signal}
-                            </span>
-                          ) : (
-                            <Skeleton className="h-6 w-16 mx-auto" />
-                          )}
-                          {sig && (
-                            <div className="text-[10px] text-muted-foreground mt-1 font-mono" data-mono>
-                              entry {usd(sig.entry_price_usd)}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-3 py-3 text-right font-mono text-destructive hidden md:table-cell" data-mono>
-                          {sig ? usd(sig.stop_price_usd) : "—"}
-                        </td>
-                        <td className="px-3 py-3 text-right font-mono text-success hidden md:table-cell" data-mono>
-                          {sig ? usd(sig.target_price_usd) : "—"}
-                        </td>
-                        <td className="px-3 py-3 text-left text-xs text-muted-foreground hidden lg:table-cell">
-                          {sig?.horizon || "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <aside className="bg-card border rounded-xl shadow-card p-4 space-y-3 h-fit lg:sticky lg:top-20">
-            {!selected || !selectedQuote ? (
-              <div className="text-sm text-muted-foreground text-center py-10">
-                Hacé click en una crypto para ver detalles, calculadora y alertas.
+        <div className="space-y-4">
+          {selected && selectedQuote && (
+            <TradingViewChart ticker={selectedQuote.ticker} />
+          )}
+          <div className="grid lg:grid-cols-[1fr_360px] gap-4">
+            <div className="bg-card border rounded-xl shadow-card overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-secondary/40 text-xs uppercase text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-left">Crypto</th>
+                      <th className="px-3 py-2 text-right">Precio USD</th>
+                      <th className="px-3 py-2 text-right">24h%</th>
+                      <th className="px-3 py-2 text-center">Señal</th>
+                      <th className="px-3 py-2 text-right hidden md:table-cell">Stop</th>
+                      <th className="px-3 py-2 text-right hidden md:table-cell">Target</th>
+                      <th className="px-3 py-2 text-left hidden lg:table-cell">Plazo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {quotes.length === 0 && (
+                      <>{[1,2,3,4,5].map((i) => (
+                        <tr key={i}><td colSpan={7} className="p-2"><Skeleton className="h-8 w-full" /></td></tr>
+                      ))}</>
+                    )}
+                    {quotes.map((q) => {
+                      const sig = sigByTicker.get(q.ticker);
+                      const isSel = selected === q.ticker;
+                      const sigCls = sig?.signal === "COMPRAR" ? "bg-success text-background"
+                        : sig?.signal === "VENDER" ? "bg-destructive text-destructive-foreground"
+                        : sig?.signal === "ESPERAR" ? "bg-warning text-background" : "bg-muted text-muted-foreground";
+                      return (
+                        <tr key={q.ticker} onClick={() => setSelected(isSel ? null : q.ticker)} className={`border-t cursor-pointer hover:bg-secondary/30 transition-colors ${isSel ? "bg-secondary/40" : ""}`}>
+                          <td className="px-3 py-3">
+                            <div className="font-bold">{q.ticker}</div>
+                            <div className="text-xs text-muted-foreground">{q.name}</div>
+                          </td>
+                          <td className="px-3 py-3 text-right font-mono font-semibold">{q.price_usd > 0 ? usd(q.price_usd) : "—"}</td>
+                          <td className={`px-3 py-3 text-right font-mono text-xs ${q.change_24h_pct >= 0 ? "text-success" : "text-destructive"}`}>
+                            {q.change_24h_pct >= 0 ? "+" : ""}{q.change_24h_pct.toFixed(2)}%
+                          </td>
+                          <td className="px-3 py-3 text-center">
+                            {sig ? (
+                              <span className={`inline-block px-3 py-1 rounded-md text-xs font-extrabold uppercase tracking-wide ${sigCls}`}>{sig.signal}</span>
+                            ) : <Skeleton className="h-6 w-16 mx-auto" />}
+                            {sig && <div className="text-[10px] text-muted-foreground mt-1 font-mono">entry {usd(sig.entry_price_usd)}</div>}
+                          </td>
+                          <td className="px-3 py-3 text-right font-mono text-destructive hidden md:table-cell">{sig ? usd(sig.stop_price_usd) : "—"}</td>
+                          <td className="px-3 py-3 text-right font-mono text-success hidden md:table-cell">{sig ? usd(sig.target_price_usd) : "—"}</td>
+                          <td className="px-3 py-3 text-left text-xs text-muted-foreground hidden lg:table-cell">{sig?.horizon || "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-            ) : (
-              <>
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="font-display font-bold text-2xl">{selectedQuote.ticker}</div>
-                    <div className="text-xs text-muted-foreground">{selectedQuote.name}</div>
-                  </div>
-                  <button onClick={() => setSelected(null)} className="text-muted-foreground hover:text-foreground">
-                    <X className="size-4" />
-                  </button>
+            </div>
+
+            <aside className="bg-card border rounded-xl shadow-card p-4 space-y-3 h-fit lg:sticky lg:top-20">
+              {!selected || !selectedQuote ? (
+                <div className="text-sm text-muted-foreground text-center py-10">
+                  Hacé click en una crypto para ver detalles, señal y alertas.
                 </div>
-                <div className="font-mono text-2xl font-bold" data-mono>{usd(selectedQuote.price_usd)}</div>
-                <div className={`text-xs font-mono ${selectedQuote.change_24h_pct >= 0 ? "text-success" : "text-destructive"}`} data-mono>
-                  {selectedQuote.change_24h_pct >= 0 ? "+" : ""}{selectedQuote.change_24h_pct.toFixed(2)}% (24h)
-                </div>
-                {selectedSig && (
-                  <>
-                    <div className={`mt-2 p-3 rounded-lg ${selectedSig.signal === "COMPRAR" ? "bg-success/15 border border-success/40" : selectedSig.signal === "VENDER" ? "bg-destructive/15 border border-destructive/40" : "bg-warning/15 border border-warning/40"}`}>
-                      <div className="text-xs uppercase font-bold tracking-wide">Orden</div>
-                      <div className="text-xl font-display font-bold">{selectedSig.signal} {selectedSig.ticker}</div>
-                      <div className="grid grid-cols-3 gap-2 mt-2 text-xs font-mono" data-mono>
-                        <div><div className="text-muted-foreground">Entrada</div><div className="font-bold">{usd(selectedSig.entry_price_usd)}</div></div>
-                        <div><div className="text-muted-foreground">Stop</div><div className="font-bold text-destructive">{usd(selectedSig.stop_price_usd)} <span className="text-[10px]">({selectedSig.stop_pct.toFixed(1)}%)</span></div></div>
-                        <div><div className="text-muted-foreground">Target</div><div className="font-bold text-success">{usd(selectedSig.target_price_usd)} <span className="text-[10px]">(+{selectedSig.target_pct.toFixed(1)}%)</span></div></div>
-                      </div>
-                      <div className="text-xs mt-2"><span className="text-muted-foreground">Plazo:</span> <span className="font-bold">{selectedSig.horizon}</span> · <span className="text-muted-foreground">Prob:</span> <span className="font-bold">{selectedSig.probability_pct}%</span></div>
-                      {(() => {
-                        const r = ratioBadge(selectedSig.stop_price_usd, selectedSig.target_price_usd, selectedSig.entry_price_usd);
-                        return r ? <div className={`text-xs mt-1 ${r.cls}`}>R/B: {r.label}</div> : null;
-                      })()}
-                      <p className="text-xs italic mt-2">"{selectedSig.reason}"</p>
+              ) : (
+                <>
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="font-display font-bold text-2xl">{selectedQuote.ticker}</div>
+                      <div className="text-xs text-muted-foreground">{selectedQuote.name}</div>
                     </div>
-                    <PositionCalculator sig={selectedSig} onSaveTrade={async (capital) => {
-                      if (!user) return;
-                      const { error } = await supabase.from("crypto_trades").insert({
-                        user_id: user.id,
-                        ticker: selectedSig.ticker,
-                        signal: selectedSig.signal,
-                        entry_price_usd: selectedSig.entry_price_usd,
-                        stop_price_usd: selectedSig.stop_price_usd,
-                        target_price_usd: selectedSig.target_price_usd,
-                        capital_usd: capital,
-                      });
-                      if (error) toast.error(error.message);
-                      else { toast.success("Trade guardado"); reloadTrades(); }
-                    }} />
-                  </>
-                )}
-                <PriceAlertForm ticker={selectedQuote.ticker} currentPrice={selectedQuote.price_usd} userId={user?.id} onCreated={reloadAlerts} />
-                <ExistingAlerts alerts={alerts.filter((a) => a.ticker === selectedQuote.ticker)} onDelete={async (id) => {
-                  await supabase.from("price_alerts").delete().eq("id", id);
-                  reloadAlerts();
-                }} />
-              </>
-            )}
-          </aside>
+                    <button onClick={() => setSelected(null)} className="text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
+                  </div>
+                  <div className="font-mono text-2xl font-bold">{usd(selectedQuote.price_usd)}</div>
+                  <div className={`text-xs font-mono ${selectedQuote.change_24h_pct >= 0 ? "text-success" : "text-destructive"}`}>
+                    {selectedQuote.change_24h_pct >= 0 ? "+" : ""}{selectedQuote.change_24h_pct.toFixed(2)}% (24h)
+                  </div>
+                  {selectedSig && (
+                    <>
+                      <div className={`mt-2 p-3 rounded-lg ${selectedSig.signal === "COMPRAR" ? "bg-success/15 border border-success/40" : selectedSig.signal === "VENDER" ? "bg-destructive/15 border border-destructive/40" : "bg-warning/15 border border-warning/40"}`}>
+                        <div className="text-xs uppercase font-bold tracking-wide">Orden</div>
+                        <div className="text-xl font-display font-bold">{selectedSig.signal} {selectedSig.ticker}</div>
+                        <div className="grid grid-cols-3 gap-2 mt-2 text-xs font-mono">
+                          <div><div className="text-muted-foreground">Entrada</div><div className="font-bold">{usd(selectedSig.entry_price_usd)}</div></div>
+                          <div><div className="text-muted-foreground">Stop</div><div className="font-bold text-destructive">{usd(selectedSig.stop_price_usd)} <span className="text-[10px]">({selectedSig.stop_pct.toFixed(1)}%)</span></div></div>
+                          <div><div className="text-muted-foreground">Target</div><div className="font-bold text-success">{usd(selectedSig.target_price_usd)} <span className="text-[10px]">(+{selectedSig.target_pct.toFixed(1)}%)</span></div></div>
+                        </div>
+                        <div className="text-xs mt-2"><span className="text-muted-foreground">Plazo:</span> <span className="font-bold">{selectedSig.horizon}</span> · <span className="text-muted-foreground">Prob:</span> <span className="font-bold">{selectedSig.probability_pct}%</span></div>
+                        {(() => { const r = ratioBadge(selectedSig.stop_price_usd, selectedSig.target_price_usd, selectedSig.entry_price_usd); return r ? <div className={`text-xs mt-1 ${r.cls}`}>R/B: {r.label}</div> : null; })()}
+                        <p className="text-xs italic mt-2">"{selectedSig.reason}"</p>
+                      </div>
+                      <PositionCalculator sig={selectedSig} onSaveTrade={async (capital) => {
+                        const u = userRef.current;
+                        if (!u) return;
+                        const { error } = await supabase.from("crypto_trades").insert({
+                          user_id: u.id, ticker: selectedSig.ticker, signal: selectedSig.signal,
+                          entry_price_usd: selectedSig.entry_price_usd, stop_price_usd: selectedSig.stop_price_usd,
+                          target_price_usd: selectedSig.target_price_usd, capital_usd: capital,
+                        });
+                        if (error) toast.error(error.message);
+                        else { toast.success("Trade guardado"); reloadTrades(); }
+                      }} />
+                    </>
+                  )}
+                  <PriceAlertForm ticker={selectedQuote.ticker} currentPrice={selectedQuote.price_usd} userId={user?.id} onCreated={reloadAlerts} />
+                  <ExistingAlerts alerts={alerts.filter((a) => a.ticker === selectedQuote.ticker)} onDelete={async (id) => {
+                    await supabase.from("price_alerts").delete().eq("id", id);
+                    reloadAlerts();
+                  }} />
+                </>
+              )}
+            </aside>
+          </div>
         </div>
       )}
 
@@ -335,19 +321,16 @@ export function CryptoTab() {
                   </tr>
                 </thead>
                 <tbody>
-                  {trades.length === 0 && (
-                    <tr><td colSpan={7} className="text-center text-muted-foreground py-8">Sin trades guardados todavía.</td></tr>
-                  )}
+                  {trades.length === 0 && <tr><td colSpan={7} className="text-center text-muted-foreground py-8">Sin trades guardados todavía.</td></tr>}
                   {trades.map((t) => {
-                    const open = t.status === "open";
-                    const won = t.status === "won";
+                    const open = t.status === "open"; const won = t.status === "won";
                     return (
                       <tr key={t.id} className="border-t">
                         <td className="px-3 py-2 font-bold">{t.ticker}</td>
                         <td className="px-3 py-2 text-xs">{t.signal}</td>
-                        <td className="px-3 py-2 text-right font-mono" data-mono>{usd(Number(t.entry_price_usd))}</td>
-                        <td className="px-3 py-2 text-right font-mono hidden md:table-cell" data-mono>{usd(Number(t.capital_usd))}</td>
-                        <td className={`px-3 py-2 text-right font-mono ${t.pnl_usd != null ? (Number(t.pnl_usd) >= 0 ? "text-success" : "text-destructive") : "text-muted-foreground"}`} data-mono>
+                        <td className="px-3 py-2 text-right font-mono">{usd(Number(t.entry_price_usd))}</td>
+                        <td className="px-3 py-2 text-right font-mono hidden md:table-cell">{usd(Number(t.capital_usd))}</td>
+                        <td className={`px-3 py-2 text-right font-mono ${t.pnl_usd != null ? (Number(t.pnl_usd) >= 0 ? "text-success" : "text-destructive") : "text-muted-foreground"}`}>
                           {t.pnl_usd != null ? `${Number(t.pnl_usd) >= 0 ? "+" : ""}${usd(Number(t.pnl_usd))}` : "—"}
                         </td>
                         <td className="px-3 py-2 text-center">
@@ -375,11 +358,7 @@ export function CryptoTab() {
                               }}>Perdió</Button>
                             </div>
                           )}
-                          {!open && (
-                            <button onClick={async () => { await supabase.from("crypto_trades").delete().eq("id", t.id); reloadTrades(); }} className="text-muted-foreground hover:text-destructive">
-                              <Trash2 className="size-3.5" />
-                            </button>
-                          )}
+                          {!open && <button onClick={async () => { await supabase.from("crypto_trades").delete().eq("id", t.id); reloadTrades(); }} className="text-muted-foreground hover:text-destructive"><Trash2 className="size-3.5" /></button>}
                         </td>
                       </tr>
                     );
@@ -398,7 +377,7 @@ function Stat({ label, value, cls }: { label: string; value: string; cls?: strin
   return (
     <div className="bg-card border rounded-xl p-4 shadow-card">
       <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className={`text-2xl font-display font-bold mt-1 font-mono ${cls || ""}`} data-mono>{value}</div>
+      <div className={`text-2xl font-display font-bold mt-1 font-mono ${cls || ""}`}>{value}</div>
     </div>
   );
 }
@@ -409,8 +388,6 @@ function PositionCalculator({ sig, onSaveTrade }: { sig: CryptoSignal; onSaveTra
   const units = sig.entry_price_usd > 0 ? cap / sig.entry_price_usd : 0;
   const winUsd = (sig.target_price_usd - sig.entry_price_usd) * units;
   const loseUsd = (sig.stop_price_usd - sig.entry_price_usd) * units;
-  const winPct = sig.target_pct;
-  const losePct = sig.stop_pct;
   const ratio = ratioBadge(sig.stop_price_usd, sig.target_price_usd, sig.entry_price_usd);
   return (
     <div className="border-t pt-3">
@@ -418,18 +395,18 @@ function PositionCalculator({ sig, onSaveTrade }: { sig: CryptoSignal; onSaveTra
       <label className="text-xs text-muted-foreground">Capital a invertir (USD)</label>
       <Input inputMode="decimal" value={capStr} onChange={(e) => setCapStr(e.target.value)} className="font-mono mt-1" />
       {cap > 0 && (
-        <div className="mt-3 space-y-1.5 text-sm font-mono" data-mono>
+        <div className="mt-3 space-y-1.5 text-sm font-mono">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>Comprás</span>
             <span className="text-foreground font-bold">{units.toFixed(units < 1 ? 6 : 4)} {sig.ticker}</span>
           </div>
           <div className="flex items-center justify-between bg-success/10 rounded-lg px-3 py-2">
             <span className="text-xs text-muted-foreground">Si llega al target</span>
-            <span className="font-bold text-success">+{usd(winUsd)} <span className="text-xs">(+{winPct.toFixed(1)}%)</span></span>
+            <span className="font-bold text-success">+{usd(winUsd)} <span className="text-xs">(+{sig.target_pct.toFixed(1)}%)</span></span>
           </div>
           <div className="flex items-center justify-between bg-destructive/10 rounded-lg px-3 py-2">
             <span className="text-xs text-muted-foreground">Si llega al stop</span>
-            <span className="font-bold text-destructive">{usd(loseUsd)} <span className="text-xs">({losePct.toFixed(1)}%)</span></span>
+            <span className="font-bold text-destructive">{usd(loseUsd)} <span className="text-xs">({sig.stop_pct.toFixed(1)}%)</span></span>
           </div>
           {ratio && <div className={`text-xs ${ratio.cls}`}>Riesgo/beneficio: {ratio.label}</div>}
           <Button size="sm" className="w-full mt-2" onClick={() => onSaveTrade(cap)}>Guardar como trade</Button>
@@ -476,14 +453,9 @@ function ExistingAlerts({ alerts, onDelete }: { alerts: Alert[]; onDelete: (id: 
       <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">Alertas activas</div>
       <ul className="space-y-1 text-xs">
         {alerts.map((a) => (
-          <li key={a.id} className="flex items-center justify-between bg-secondary/30 rounded px-2 py-1 font-mono" data-mono>
-            <span>
-              {a.direction === "above" ? "≥" : "≤"} {usd(Number(a.target_price))}
-              {a.is_triggered && <span className="ml-2 text-success">✓ disparada</span>}
-            </span>
-            <button onClick={() => onDelete(a.id)} className="text-muted-foreground hover:text-destructive">
-              <Trash2 className="size-3" />
-            </button>
+          <li key={a.id} className="flex items-center justify-between bg-secondary/30 rounded px-2 py-1 font-mono">
+            <span>{a.direction === "above" ? "≥" : "≤"} {usd(Number(a.target_price))}{a.is_triggered && <span className="ml-2 text-success">✓</span>}</span>
+            <button onClick={() => onDelete(a.id)} className="text-muted-foreground hover:text-destructive"><Trash2 className="size-3" /></button>
           </li>
         ))}
       </ul>
