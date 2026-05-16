@@ -6,6 +6,7 @@ import {
   type CryptoTechnicals,
   type ChartBar,
 } from "@/lib/technicals.server";
+import { queueGeminiCall } from "@/lib/geminiQueue";
 import { z } from "zod";
 import { getCachedAnalysis, setCachedAnalysis } from "@/lib/analysisCache";
 
@@ -223,7 +224,7 @@ export const analyzeCrypto = createServerFn({ method: "POST" })
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY no configurada");
 
-    // Cache: si no es force refresh y hay un análisis reciente, devolverlo
+    // Cache: si no es force refresh, devolver análisis reciente
     if (!data.force && data.user_id) {
       const cached = await getCachedAnalysis<{ market: CryptoMarket; signals: CryptoSignal[] }>(data.user_id, "crypto");
       if (cached) {
@@ -234,6 +235,7 @@ export const analyzeCrypto = createServerFn({ method: "POST" })
     }
 
     const snap = await buildQuotes();
+
     const validSymbols = snap.quotes.filter((q) => q.price_usd > 0).map((q) => q.symbol);
     const technicals = await getCryptoTechnicalsBatch(validSymbols).catch(
       () => ({} as Record<string, CryptoTechnicals>),
@@ -272,15 +274,34 @@ Fear & Greed: ${fg ? `${fg.value} (${fg.label})` : "n/d"}
 Dominancia BTC: ${dom != null ? dom.toFixed(2) + "%" : "n/d"}
 Hora UTC: ${new Date().toISOString()}
 
-REGLAS DE TRADING:
-COMPRAR — necesita 3+ confirmaciones: RSI<35, MACD cruce alcista, BB lower, soporte clave, vol>1.3x, Fear&Greed<40
-VENDER — necesita 2+ confirmaciones: RSI>68, MACD cruce bajista, BB upper, resistencia clave
-ESPERAR cuando RSI 40-60, BB middle, MACD neutral
+REGLAS DE TRADING (sistema cuantitativo, no emocional):
 
-REGLA DE STOP/TARGET:
-- COMPRAR: stop < entry, target > entry
-- VENDER: stop > entry, target < entry
-- ESPERAR: target >= entry × 1.05, stop < entry
+COMPRAR — necesita 3+ confirmaciones:
+✓ RSI < 35 (sobrevendido)
+✓ MACD en cruce alcista o histograma > 0 viniendo de < 0
+✓ Precio en banda inferior de Bollinger (BB lower)
+✓ Precio cerca del soporte clave
+✓ Volumen relativo > 1.3x
+✓ Fear & Greed < 40 (miedo = oportunidad)
+
+VENDER — necesita 2+ confirmaciones:
+✓ RSI > 68 (sobrecomprado)
+✓ MACD cruce bajista o histograma < 0 desde > 0
+✓ Precio en banda superior de Bollinger
+✓ Precio cerca de resistencia clave
+✓ Volumen decreciente con precio alto
+
+ESPERAR cuando: RSI 40-60, BB middle, MACD neutral, volumen bajo (<0.8x).
+
+PLAZOS CRYPTO (más cortos que acciones):
+- Scalping (RSI extremo + vol alto): 2-8 horas
+- Swing corto (cruce MACD): 1-3 días
+- Swing medio (BB + soporte): 3-7 días
+
+REGLA DE STOP/TARGET (validamos en código):
+- COMPRAR: stop < entry · target > entry (ej: stop -6%, target +12%)
+- VENDER:  stop > entry · target < entry (ej: stop +6%, target -12%)
+- ESPERAR: entry = nivel sugerido futuro · target ≥ entry × 1.05
 
 Devolvé SOLO JSON sin texto extra ni backticks:
 {
@@ -291,33 +312,65 @@ Devolvé SOLO JSON sin texto extra ni backticks:
       "entry_price_usd": número exacto USD,
       "stop_price_usd": número exacto USD,
       "target_price_usd": número exacto USD,
-      "stop_pct": número,
-      "target_pct": número,
+      "stop_pct": número (negativo COMPRAR, positivo VENDER),
+      "target_pct": número (positivo COMPRAR, negativo VENDER),
       "horizon": "ej: 2-4 horas | 1-3 días | 3-7 días",
       "probability_pct": 60-90,
-      "reason": "máximo 18 palabras citando RSI + MACD + BB"
+      "reason": "máximo 18 palabras citando RSI + MACD + BB que justifican"
     }
   ]
 }
 
 Generá señal para TODAS las cryptos con precio > 0.`;
 
-    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "gemini-2.0-flash",
-        temperature: 0.1,
-        messages: [
-          { role: "system", content: ORACULO_SYSTEM_PROMPT + "\n\nIMPORTANTE: para esta llamada respondé SOLO JSON válido, sin formato visual." },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-    });
+    const callGemini = async () =>
+      queueGeminiCall(() => fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gemini-2.0-flash",
+          temperature: 0.1,
+          messages: [
+            { role: "system", content: ORACULO_SYSTEM_PROMPT + "\n\nIMPORTANTE: para esta llamada respondé SOLO JSON válido, sin formato visual." },
+            { role: "user", content: userPrompt },
+          ],
+        }),
+      }));
 
-    if (r.status === 429) throw new Error("Límite de requests alcanzado.");
-    if (r.status === 402) throw new Error("Sin créditos en Gemini. Revisá tu quota en Google AI Studio.");
-    if (!r.ok) throw new Error(`Gemini ${r.status}: ${await r.text()}`);
+    let r = await callGemini();
+    const retryDelays = [3000, 7000, 15000];
+    for (let i = 0; i < retryDelays.length && (r.status === 429 || r.status === 503); i++) {
+      await new Promise((res) => setTimeout(res, retryDelays[i]));
+      r = await callGemini();
+    }
+
+    if (!r.ok) {
+      console.warn(`[crypto] Gemini ${r.status} tras reintentos, devolviendo fallback ESPERAR`);
+      const fallbackSignals: CryptoSignal[] = snap.quotes.map((q) => {
+        const sym = `${q.ticker}/USD`;
+        const t = technicals[sym];
+        return {
+          ticker: q.ticker,
+          signal: "ESPERAR",
+          entry_price_usd: q.price_usd,
+          stop_price_usd: 0,
+          target_price_usd: 0,
+          stop_pct: 0,
+          target_pct: 0,
+          horizon: "—",
+          probability_pct: 50,
+          reason: r.status === 429 ? "Gemini saturado, reintentá en 30s" : "Sin datos IA disponibles",
+          rsi: t?.rsi ?? null,
+          rsi_label: t?.rsiLabel ?? "N/D",
+          macd_state: macdState(t),
+          bb_position: t?.bb?.position,
+          support: t?.sr?.support ?? null,
+          resistance: t?.sr?.resistance ?? null,
+        };
+      });
+      return { market: snap.market, signals: fallbackSignals };
+    }
+
 
     const j = (await r.json()) as { choices: Array<{ message: { content: string } }> };
     let text = j.choices[0]?.message?.content || "{}";
@@ -356,7 +409,11 @@ Generá señal para TODAS las cryptos con precio > 0.`;
         support: t?.sr?.support ?? null,
         resistance: t?.sr?.resistance ?? null,
       };
-      return validateCryptoSignal(base);
+      const validated = validateCryptoSignal(base);
+      if (validated.validation_corrected) {
+        console.warn(`[crypto] señal corregida ${s.ticker} (${s.signal}): stop/target estaba del lado equivocado`);
+      }
+      return validated;
     });
 
     const result = { market: snap.market, signals: parsed.signals };
@@ -367,7 +424,8 @@ Generá señal para TODAS las cryptos con precio > 0.`;
     }
 
     return result;
-  });
+  },
+);
 
 export const getCryptoBars = createServerFn({ method: "GET" })
   .inputValidator(
