@@ -1,224 +1,374 @@
 import { createServerFn } from "@tanstack/react-start";
-import { z } from "zod";
 import { ORACULO_SYSTEM_PROMPT } from "@/lib/oraculoPrompt";
-import { getTechnicalsBatch } from "@/lib/technicals.server";
-import { capsForTicker, type Technicals } from "@/lib/technicals";
-import { getTdIndicators, bbandsPosition, type TdIndicators } from "@/lib/twelvedata.server";
-import { getNews, getSentiment, type FinnhubNews, type FinnhubSentiment } from "@/lib/finnhub.server";
-import { validateSignal } from "@/lib/signalValidator";
-import { macdState, countConditionsBuy, countConditionsSell, missingIndicators } from "@/lib/analyze.helpers";
-import { captureAnalysisIssue } from "@/lib/monitoring";
+import {
+  getCryptoTechnicalsBatch,
+  getCryptoChartBars,
+  type CryptoTechnicals,
+  type ChartBar,
+} from "@/lib/technicals.server";
 import { queueGeminiCall } from "@/lib/geminiQueue";
+import { z } from "zod";
 import { getCachedAnalysis, setCachedAnalysis } from "@/lib/analysisCache";
 
-const InputSchema = z.object({
-  capital_ars: z.number().min(0),
-  mep: z.number(),
-  ccl: z.number(),
-  market_open: z.boolean().optional().default(true),
-  force: z.boolean().optional().default(false),
-  user_id: z.string().optional(),
-  quotes: z.array(z.object({
-    ticker: z.string(),
-    price_usd: z.number(),
-    change_pct: z.number(),
-  })),
-  positions: z.array(z.object({
-    ticker: z.string(),
-    entry_price_usd: z.number(),
-    pnl_pct: z.number(),
-  })).optional().default([]),
-});
+const ALPACA_DATA = "https://data.alpaca.markets";
 
-export type AssetSignal = {
+function alpacaHeaders() {
+  const k = process.env.ALPACA_API_KEY;
+  const s = process.env.ALPACA_SECRET_KEY;
+  if (!k || !s) throw new Error("Alpaca keys no configuradas");
+  return { "APCA-API-KEY-ID": k, "APCA-API-SECRET-KEY": s };
+}
+
+export const CRYPTO_SYMBOLS = [
+  "BTC/USD",
+  "ETH/USD",
+  "SOL/USD",
+  "XRP/USD",
+  "ADA/USD",
+  "AVAX/USD",
+  "DOGE/USD",
+  "LINK/USD",
+  "LTC/USD",
+  "UNI/USD",
+  "DOT/USD",
+  "BCH/USD",
+  "ETC/USD",
+  "XLM/USD",
+  "AAVE/USD",
+  "ALGO/USD",
+  "MATIC/USD",
+  "ATOM/USD",
+  "FIL/USD",
+];
+
+export const CRYPTO_NAMES: Record<string, string> = {
+  BTC: "Bitcoin",
+  ETH: "Ethereum",
+  SOL: "Solana",
+  XRP: "XRP",
+  ADA: "Cardano",
+  AVAX: "Avalanche",
+  DOGE: "Dogecoin",
+  LINK: "Chainlink",
+  LTC: "Litecoin",
+  UNI: "Uniswap",
+  DOT: "Polkadot",
+  BCH: "Bitcoin Cash",
+  ETC: "Ethereum Classic",
+  XLM: "Stellar",
+  AAVE: "Aave",
+  ALGO: "Algorand",
+  MATIC: "Polygon",
+  ATOM: "Cosmos",
+  FIL: "Filecoin",
+};
+
+export type CryptoQuote = {
   ticker: string;
-  signal: "COMPRAR" | "VENDER" | "MANTENER" | "ESPERAR";
-  confidence: number;
-  probability_pct: number;
-  estimated_return_pct: number;
-  horizon: string;
-  horizon_days: number;
-  risk_level: "Bajo" | "Medio" | "Alto";
-  action_reason: string;
-  risk_note: string;
-  stop_loss_pct: number;
-  take_profit_pct: number;
-  entry_offset_pct: number;
+  symbol: string;
+  name: string;
+  price_usd: number;
+  change_24h_pct: number;
+  volume_24h: number;
+  ts: string;
+};
+
+export type CryptoSignal = {
+  ticker: string;
+  signal: "COMPRAR" | "VENDER" | "ESPERAR";
   entry_price_usd: number;
   stop_price_usd: number;
   target_price_usd: number;
+  stop_pct: number;
+  target_pct: number;
+  horizon: string;
+  probability_pct: number;
+  reason: string;
   rsi?: number | null;
   rsi_label?: "SOBREVENDIDO" | "NEUTRO" | "SOBRECOMPRADO" | "N/D";
-  macd_state?: "alcista" | "bajista" | "neutro";
+  macd_state?: "alcista" | "bajista" | "neutral";
   bb_position?: "upper" | "middle" | "lower";
-  stoch_state?: "oversold" | "neutral" | "overbought";
-  stoch_k?: number | null;
-  conditions_met?: number;
-  key_indicator?: string;
-  bullish_pct?: number;
-  bearish_pct?: number;
-  news_headlines?: string[];
-  volume_label?: "alto" | "normal" | "bajo";
-  above_ma20?: boolean;
-  ma20?: number;
-  relative_volume?: number;
-  change5d_pct?: number | null;
-  technicals_partial?: boolean;
-  target_adjusted?: boolean;
-  data_insufficient?: boolean;
+  support?: number | null;
+  resistance?: number | null;
+  validation_corrected?: boolean;
 };
 
-export type MarketAnalysis = {
-  market_context: string;
-  market_score: number;
-  market_score_label: string;
-  estimated_monthly_return_pct: number;
-  assets: AssetSignal[];
+export function validateCryptoSignal<S extends CryptoSignal>(sig: S): S {
+  const entry = Number(sig.entry_price_usd) || 0;
+  if (entry <= 0) return sig;
+  let stop = Number(sig.stop_price_usd) || 0;
+  let target = Number(sig.target_price_usd) || 0;
+  let corrected = false;
+
+  if (sig.signal === "COMPRAR") {
+    if (stop <= 0 || stop >= entry) { stop = +(entry * 0.94).toFixed(8); corrected = true; }
+    if (target <= 0 || target <= entry) { target = +(entry * 1.12).toFixed(8); corrected = true; }
+  } else if (sig.signal === "VENDER") {
+    if (stop <= 0 || stop <= entry) { stop = +(entry * 1.06).toFixed(8); corrected = true; }
+    if (target <= 0 || target >= entry) { target = +(entry * 0.88).toFixed(8); corrected = true; }
+  } else {
+    if (target <= entry * 1.03) { target = +(entry * 1.12).toFixed(8); corrected = true; }
+    if (stop <= 0 || stop >= entry) { stop = +(entry * 0.9).toFixed(8); corrected = true; }
+  }
+
+  const stopPct = ((stop - entry) / entry) * 100;
+  const targetPct = ((target - entry) / entry) * 100;
+  return {
+    ...sig,
+    stop_price_usd: stop,
+    target_price_usd: target,
+    stop_pct: +stopPct.toFixed(2),
+    target_pct: +targetPct.toFixed(2),
+    validation_corrected: corrected || sig.validation_corrected,
+  };
+}
+
+export type CryptoMarket = {
+  fear_greed: { value: number; label: string } | null;
+  btc_dominance: number | null;
   generated_at: string;
-  cache_age_min?: number;
 };
 
-export const analyzeMarket = createServerFn({ method: "POST" })
-  .inputValidator((d: unknown) => InputSchema.parse(d))
-  .handler(async ({ data }): Promise<MarketAnalysis> => {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error("GEMINI_API_KEY no configurada");
+export type CryptoSnapshot = {
+  market: CryptoMarket;
+  quotes: CryptoQuote[];
+};
+
+async function fetchCryptoQuotes(): Promise<Record<string, { ap?: number; bp?: number; t?: string }>> {
+  const symbols = encodeURIComponent(CRYPTO_SYMBOLS.join(","));
+  const r = await fetch(
+    `${ALPACA_DATA}/v1beta3/crypto/us/latest/quotes?symbols=${symbols}`,
+    { headers: alpacaHeaders() },
+  );
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`Alpaca crypto quotes ${r.status}: ${t}`);
+  }
+  const j = (await r.json()) as { quotes: Record<string, { ap?: number; bp?: number; t?: string }> };
+  return j.quotes || {};
+}
+
+async function fetchCryptoBars(): Promise<Record<string, { o?: number; c?: number; v?: number }>> {
+  const symbols = encodeURIComponent(CRYPTO_SYMBOLS.join(","));
+  const r = await fetch(
+    `${ALPACA_DATA}/v1beta3/crypto/us/latest/bars?symbols=${symbols}`,
+    { headers: alpacaHeaders() },
+  );
+  if (!r.ok) return {};
+  const j = (await r.json()) as { bars: Record<string, { o?: number; c?: number; v?: number }> };
+  return j.bars || {};
+}
+
+async function fetchFearGreed(): Promise<{ value: number; label: string } | null> {
+  try {
+    const r = await fetch("https://api.alternative.me/fng/", { signal: AbortSignal.timeout(4000) });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { data: Array<{ value: string; value_classification: string }> };
+    const d = j.data?.[0];
+    if (!d) return null;
+    return { value: Number(d.value) || 0, label: d.value_classification || "" };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchBtcDominance(): Promise<number | null> {
+  try {
+    const r = await fetch("https://api.coingecko.com/api/v3/global", { signal: AbortSignal.timeout(4000) });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { data: { market_cap_percentage: { btc: number } } };
+    return j.data?.market_cap_percentage?.btc ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildQuotes(): Promise<{ quotes: CryptoQuote[]; market: CryptoMarket }> {
+  const [quotes, bars, fg, dom] = await Promise.all([
+    fetchCryptoQuotes().catch(() => ({} as Record<string, { ap?: number; bp?: number; t?: string }>)),
+    fetchCryptoBars().catch(() => ({} as Record<string, { o?: number; c?: number; v?: number }>)),
+    fetchFearGreed(),
+    fetchBtcDominance(),
+  ]);
+  const ts = new Date().toISOString();
+  const out: CryptoQuote[] = CRYPTO_SYMBOLS.map((sym) => {
+    const ticker = sym.split("/")[0];
+    const q = quotes[sym];
+    const b = bars[sym];
+    const price = q?.ap || b?.c || 0;
+    const open = b?.o || 0;
+    const change = open > 0 ? ((price - open) / open) * 100 : 0;
+    return {
+      ticker,
+      symbol: sym,
+      name: CRYPTO_NAMES[ticker] || ticker,
+      price_usd: price,
+      change_24h_pct: change,
+      volume_24h: b?.v || 0,
+      ts,
+    };
+  });
+  return { quotes: out, market: { fear_greed: fg, btc_dominance: dom, generated_at: ts } };
+}
+
+export const getCryptoSnapshot = createServerFn({ method: "GET" }).handler(
+  async (): Promise<CryptoSnapshot> => buildQuotes(),
+);
+
+export const analyzeCrypto = createServerFn({ method: "POST" })
+  .inputValidator(z.object({
+    force: z.boolean().optional().default(false),
+    user_id: z.string().optional(),
+  }))
+  .handler(async ({ data }): Promise<{ market: CryptoMarket; signals: CryptoSignal[]; cache_age_min?: number }> => {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) throw new Error("GROQ_API_KEY no configurada");
 
     // Cache: si no es force refresh, devolver análisis reciente
     if (!data.force && data.user_id) {
-      const cached = await getCachedAnalysis<MarketAnalysis>(data.user_id, "market");
+      const cached = await getCachedAnalysis<{ market: CryptoMarket; signals: CryptoSignal[] }>(data.user_id, "crypto");
       if (cached) {
         const minutes = Math.round(cached.age_ms / 60_000);
-        console.log(`[analyze] cache hit (${minutes} min old)`);
+        console.log(`[crypto] cache hit (${minutes} min old)`);
         return { ...cached.data, cache_age_min: minutes };
       }
     }
 
-    const tickers = data.quotes.map((q) => q.ticker);
+    const snap = await buildQuotes();
 
-    const [tdMap, newsMap, sentMap, alpacaTech] = await Promise.all([
-      Promise.all(tickers.map(async (t) => [t, await getTdIndicators(t)] as const))
-        .then((arr) => Object.fromEntries(arr) as Record<string, TdIndicators>),
-      Promise.all(tickers.map(async (t) => [t, await getNews(t)] as const))
-        .then((arr) => Object.fromEntries(arr) as Record<string, FinnhubNews[]>),
-      Promise.all(tickers.map(async (t) => [t, await getSentiment(t)] as const))
-        .then((arr) => Object.fromEntries(arr) as Record<string, FinnhubSentiment | null>),
-      getTechnicalsBatch(tickers).catch(() => ({} as Record<string, Technicals>)),
-    ]);
+    const validSymbols = snap.quotes.filter((q) => q.price_usd > 0).map((q) => q.symbol);
+    const technicals = await getCryptoTechnicalsBatch(validSymbols).catch(
+      () => ({} as Record<string, CryptoTechnicals>),
+    );
 
-    for (const t of tickers) {
-      const missing = missingIndicators(tdMap[t]);
-      if (missing.length > 0) {
-        captureAnalysisIssue({ ticker: t, missing, stage: "fetch" });
-      }
+    function macdState(t?: CryptoTechnicals): "alcista" | "bajista" | "neutral" {
+      const m = t?.macd;
+      if (!m) return "neutral";
+      if (m.crossover) return "alcista";
+      if (m.crossunder) return "bajista";
+      return m.histogram > 0 ? "alcista" : m.histogram < 0 ? "bajista" : "neutral";
     }
 
-    const lines = data.quotes.map((q) => {
-      const td = tdMap[q.ticker];
-      const sent = sentMap[q.ticker];
-      const news = newsMap[q.ticker] || [];
-      const caps = capsForTicker(q.ticker);
-      const bb = td?.bbands ? bbandsPosition(td.bbands, q.price_usd) : null;
-      const cBuy = countConditionsBuy(td, sent, bb?.position ?? null);
-      const cSell = countConditionsSell(td, bb?.position ?? null);
-      const ms = macdState(td);
-      const headlines = news.slice(0, 2).map((n) => n.headline.slice(0, 80)).join(" | ") || "sin noticias";
-      return `${q.ticker} [${caps.categoryLabel} SLmax ${caps.slMax}% TPmax ${caps.tpMax}%] $${q.price_usd.toFixed(2)} (${q.change_pct.toFixed(2)}%) `
-        + `| RSI ${td?.rsi?.rsi ?? "N/D"} | MACD ${ms}${td?.macd ? ` (${td.macd.macd.toFixed(3)}/${td.macd.macd_signal.toFixed(3)})` : ""} `
-        + `| BB ${bb?.position ?? "N/D"}${bb ? ` (lo ${bb.lower_band.toFixed(2)}/up ${bb.upper_band.toFixed(2)})` : ""} `
-        + `| Stoch K ${td?.stoch?.slow_k.toFixed(1) ?? "N/D"} (${td?.stoch?.state ?? "N/D"}) `
-        + `| Sent bull ${sent?.bullishPercent ?? "N/D"}% / bear ${sent?.bearishPercent ?? "N/D"}% `
-        + `| Cond buy ${cBuy}/5 sell ${cSell}/4 `
-        + `| News: ${headlines}`;
-    }).join("\n");
+    const lines = snap.quotes
+      .filter((q) => q.price_usd > 0)
+      .map((q) => {
+        const t = technicals[q.symbol];
+        const rsi = t?.rsi != null ? `RSI ${t.rsi} (${t.rsiLabel})` : "RSI N/D";
+        const macd = t?.macd
+          ? `MACD ${macdState(t)}${t.macd.crossover ? " (cruce↑)" : t.macd.crossunder ? " (cruce↓)" : ""}`
+          : "MACD N/D";
+        const bb = t?.bb ? `BB ${t.bb.position}` : "BB N/D";
+        const sr = t?.sr ? `sop ${t.sr.support} res ${t.sr.resistance}` : "";
+        const vol = t?.relativeVolume ? `vol ${t.relativeVolume.toFixed(2)}x` : `vol ${q.volume_24h.toFixed(0)}`;
+        return `${q.ticker}: $${q.price_usd.toLocaleString("en-US", { maximumFractionDigits: 8 })} | 24h ${q.change_24h_pct >= 0 ? "+" : ""}${q.change_24h_pct.toFixed(2)}% | ${rsi} | ${macd} | ${bb} | ${sr} | ${vol}`;
+      })
+      .join("\n");
 
-    const prompt = `Análisis cuantitativo profesional con datos REALES.
-Cada activo trae RSI(14), MACD(12,26,9), BB(20,2), Stochastic — todos pre-calculados por Twelve Data.
-Sentiment y noticias de Finnhub.
+    const fg = snap.market.fear_greed;
+    const dom = snap.market.btc_dominance;
 
+    const userPrompt = `Sos el Oráculo, trader cuantitativo de crypto. Datos en vivo (Alpaca):
 ${lines}
 
-CCL: $${data.ccl} | MEP: $${data.mep} | Mercado: ${data.market_open ? "abierto" : "cerrado"}
-Capital usuario: ARS ${data.capital_ars.toLocaleString("es-AR")}
-Posiciones abiertas: ${data.positions.length === 0 ? "ninguna" : data.positions.map(p => `${p.ticker} pnl ${p.pnl_pct.toFixed(2)}%`).join("; ")}
+Fear & Greed: ${fg ? `${fg.value} (${fg.label})` : "n/d"}
+Dominancia BTC: ${dom != null ? dom.toFixed(2) + "%" : "n/d"}
+Hora UTC: ${new Date().toISOString()}
 
-REGLAS ESTRICTAS:
-- COMPRAR requiere ≥3 condiciones cumplidas (ver "Cond buy" arriba).
-- VENDER requiere ≥2 condiciones de venta cumplidas.
-- ESPERAR el resto, pero NUNCA más del 60% de los activos.
-- Probabilidad debe reflejar las condiciones reales (4-5 = 78-88%, 3 = 65-77%, 2 = 55-65%).
-- stop_loss_pct y take_profit_pct positivos (la dirección la define signal), DEBEN respetar SLmax/TPmax por categoría.
-- Mínimo 2-3 activos COMPRAR/VENDER. Ordenados por probability_pct desc.
-- En "reason" mencioná los indicadores reales y cuántas condiciones se cumplieron.
+REGLAS DE TRADING (sistema cuantitativo, no emocional):
 
-Respondé SOLO JSON válido sin texto extra ni backticks:
+COMPRAR — necesita 3+ confirmaciones:
+✓ RSI < 35 (sobrevendido)
+✓ MACD en cruce alcista o histograma > 0 viniendo de < 0
+✓ Precio en banda inferior de Bollinger (BB lower)
+✓ Precio cerca del soporte clave
+✓ Volumen relativo > 1.3x
+✓ Fear & Greed < 40 (miedo = oportunidad)
+
+VENDER — necesita 2+ confirmaciones:
+✓ RSI > 68 (sobrecomprado)
+✓ MACD cruce bajista o histograma < 0 desde > 0
+✓ Precio en banda superior de Bollinger
+✓ Precio cerca de resistencia clave
+✓ Volumen decreciente con precio alto
+
+ESPERAR cuando: RSI 40-60, BB middle, MACD neutral, volumen bajo (<0.8x).
+
+PLAZOS CRYPTO (más cortos que acciones):
+- Scalping (RSI extremo + vol alto): 2-8 horas
+- Swing corto (cruce MACD): 1-3 días
+- Swing medio (BB + soporte): 3-7 días
+
+REGLA DE STOP/TARGET (validamos en código):
+- COMPRAR: stop < entry · target > entry (ej: stop -6%, target +12%)
+- VENDER:  stop > entry · target < entry (ej: stop +6%, target -12%)
+- ESPERAR: entry = nivel sugerido futuro · target ≥ entry × 1.05
+
+Devolvé SOLO JSON sin texto extra ni backticks:
 {
-  "market_context": "2-3 oraciones",
-  "market_score": 0-100,
-  "market_score_label": "ej: Favorable",
-  "estimated_monthly_return_pct": número,
-  "assets": [
+  "signals": [
     {
-      "ticker": "NVDA",
+      "ticker": "BTC",
       "signal": "COMPRAR|VENDER|ESPERAR",
-      "confidence": 50-92,
-      "probability_pct": 50-92,
-      "estimated_return_pct": número,
-      "horizon": "5 días hábiles",
-      "horizon_days": 5,
-      "risk_level": "Bajo|Medio|Alto",
-      "stop_loss_pct": número positivo (≤ SLmax),
-      "take_profit_pct": número positivo (≤ TPmax),
-      "entry_offset_pct": 0,
-      "entry_price_usd": precio referencia,
-      "stop_price_usd": 0,
-      "target_price_usd": 0,
-      "conditions_met": 0-5,
-      "key_indicator": "el más determinante",
-      "action_reason": "15 palabras citando indicadores reales",
-      "risk_note": "breve"
+      "entry_price_usd": número exacto USD,
+      "stop_price_usd": número exacto USD,
+      "target_price_usd": número exacto USD,
+      "stop_pct": número (negativo COMPRAR, positivo VENDER),
+      "target_pct": número (positivo COMPRAR, negativo VENDER),
+      "horizon": "ej: 2-4 horas | 1-3 días | 3-7 días",
+      "probability_pct": 60-90,
+      "reason": "máximo 18 palabras citando RSI + MACD + BB que justifican"
     }
   ]
-}`;
+}
 
-    const callGemini = () => queueGeminiCall(() => fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "gemini-2.0-flash",
-        temperature: 0.1,
-        messages: [
-          { role: "system", content: ORACULO_SYSTEM_PROMPT + "\n\nIMPORTANTE: para esta llamada respondé SOLO JSON válido (sin el formato visual ⚡), siguiendo el schema pedido." },
-          { role: "user", content: prompt },
-        ],
-      }),
-    }));
+Generá señal para TODAS las cryptos con precio > 0.`;
 
-    // Reintentos con backoff exponencial ante 429
+    const callGemini = async () =>
+      queueGeminiCall(() => fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          temperature: 0.1,
+          messages: [
+            { role: "system", content: ORACULO_SYSTEM_PROMPT + "\n\nIMPORTANTE: para esta llamada respondé SOLO JSON válido, sin formato visual." },
+            { role: "user", content: userPrompt },
+          ],
+        }),
+      }));
+
     let r = await callGemini();
-    const delays = [3000, 7000, 15000];
-    for (const d of delays) {
-      if (r.status !== 429) break;
-      await new Promise((res) => setTimeout(res, d));
+    const retryDelays = [3000, 7000, 15000];
+    for (let i = 0; i < retryDelays.length && (r.status === 429 || r.status === 503); i++) {
+      await new Promise((res) => setTimeout(res, retryDelays[i]));
       r = await callGemini();
     }
 
-    // Si después de los reintentos sigue fallando, devolvemos fallback (no crash)
-    if (r.status === 429 || r.status === 402 || !r.ok) {
-      const reason = r.status === 429
-        ? "Gemini saturado (free tier). Reintentá en ~60s."
-        : r.status === 402
-          ? "Sin créditos en Gemini."
-          : `Gemini ${r.status}`;
-      console.error("[analyze] fallback:", reason);
-      return {
-        market_context: `Análisis IA no disponible: ${reason} Mostrando indicadores técnicos sin recomendación.`,
-        market_score: 50,
-        market_score_label: "Sin datos IA",
-        estimated_monthly_return_pct: 0,
-        assets: data.quotes.map((q) => buildInsufficientSignal(q.ticker, q.price_usd)),
-        generated_at: new Date().toISOString(),
-      };
+    if (!r.ok) {
+      console.warn(`[crypto] Gemini ${r.status} tras reintentos, devolviendo fallback ESPERAR`);
+      const fallbackSignals: CryptoSignal[] = snap.quotes.map((q) => {
+        const sym = `${q.ticker}/USD`;
+        const t = technicals[sym];
+        return {
+          ticker: q.ticker,
+          signal: "ESPERAR",
+          entry_price_usd: q.price_usd,
+          stop_price_usd: 0,
+          target_price_usd: 0,
+          stop_pct: 0,
+          target_pct: 0,
+          horizon: "—",
+          probability_pct: 50,
+          reason: r.status === 429 ? "Gemini saturado, reintentá en 30s" : "Sin datos IA disponibles",
+          rsi: t?.rsi ?? null,
+          rsi_label: t?.rsiLabel ?? "N/D",
+          macd_state: macdState(t),
+          bb_position: t?.bb?.position,
+          support: t?.sr?.support ?? null,
+          resistance: t?.sr?.resistance ?? null,
+        };
+      });
+      return { market: snap.market, signals: fallbackSignals };
     }
 
 
@@ -229,117 +379,63 @@ Respondé SOLO JSON válido sin texto extra ni backticks:
     const end = text.lastIndexOf("}");
     if (start >= 0 && end > start) text = text.slice(start, end + 1);
 
-    let parsed: MarketAnalysis;
+    let parsed: { signals: CryptoSignal[] };
     try {
-      parsed = JSON.parse(text) as MarketAnalysis;
+      parsed = JSON.parse(text) as { signals: CryptoSignal[] };
     } catch {
-      console.error("[analyze] parse failed", text);
+      console.error("crypto parse failed", text);
       throw new Error("La IA devolvió un formato inválido");
     }
 
-    parsed.assets = (parsed.assets || []).map((a) => {
-      const td = tdMap[a.ticker];
-      const sent = sentMap[a.ticker];
-      const news = newsMap[a.ticker] || [];
-      const tech = alpacaTech[a.ticker];
-      const bb = td?.bbands ? bbandsPosition(td.bbands, a.entry_price_usd || 0) : null;
-      const validated: { signal: AssetSignal["signal"]; probability_pct: number; stop_loss_pct: number; take_profit_pct: number; target_adjusted?: boolean } = validateSignal({
-        signal: a.signal,
-        probability_pct: Number(a.probability_pct) || 50,
-        stop_loss_pct: Number(a.stop_loss_pct) || 5,
-        take_profit_pct: Number(a.take_profit_pct) || 5,
-        target_adjusted: false,
-      }, a.ticker);
-      const px = Number(a.entry_price_usd) || 0;
-      const sl = validated.stop_loss_pct;
-      const tp = validated.take_profit_pct;
-      const cBuy = countConditionsBuy(td, sent, bb?.position ?? null);
-      const cSell = countConditionsSell(td, bb?.position ?? null);
-      return {
-        ...a,
-        stop_loss_pct: sl,
-        take_profit_pct: tp,
-        target_adjusted: validated.target_adjusted,
-        entry_offset_pct: Number(a.entry_offset_pct) || 0,
-        horizon_days: Number(a.horizon_days) || 5,
-        horizon: a.horizon || `${Number(a.horizon_days) || 5} días hábiles`,
-        entry_price_usd: px,
-        stop_price_usd: Number(a.stop_price_usd) || (px ? +(px * (1 - sl / 100)).toFixed(2) : 0),
-        target_price_usd: Number(a.target_price_usd) || (px ? +(px * (1 + tp / 100)).toFixed(2) : 0),
-        rsi: td?.rsi?.rsi ?? null,
-        rsi_label: td?.rsi
-          ? (td.rsi.rsi > 70 ? "SOBRECOMPRADO" : td.rsi.rsi < 30 ? "SOBREVENDIDO" : "NEUTRO")
-          : "N/D",
-        macd_state: macdState(td),
-        bb_position: bb?.position,
-        stoch_state: td?.stoch?.state,
-        stoch_k: td?.stoch?.slow_k ?? null,
-        conditions_met: a.signal === "VENDER" ? cSell : cBuy,
-        bullish_pct: sent?.bullishPercent,
-        bearish_pct: sent?.bearishPercent,
-        news_headlines: news.slice(0, 3).map((n) => n.headline),
-        volume_label: tech?.volumeLabel,
-        above_ma20: tech?.aboveMA20,
-        ma20: tech?.ma20,
-        relative_volume: tech?.relativeVolume,
-        change5d_pct: tech?.change5dPct ?? null,
-        technicals_partial: !td?.rsi,
+    const priceByTicker = new Map(snap.quotes.map((q) => [q.ticker, q.price_usd]));
+    parsed.signals = (parsed.signals || []).map((s) => {
+      const cur = priceByTicker.get(s.ticker) || 0;
+      const entry = Number(s.entry_price_usd) || cur;
+      const stop = Number(s.stop_price_usd) || 0;
+      const target = Number(s.target_price_usd) || 0;
+      const sym = `${s.ticker}/USD`;
+      const t = technicals[sym];
+      const base: CryptoSignal = {
+        ...s,
+        entry_price_usd: entry,
+        stop_price_usd: stop,
+        target_price_usd: target,
+        stop_pct: Number(s.stop_pct) || 0,
+        target_pct: Number(s.target_pct) || 0,
+        rsi: t?.rsi ?? null,
+        rsi_label: t?.rsiLabel ?? "N/D",
+        macd_state: macdState(t),
+        bb_position: t?.bb?.position,
+        support: t?.sr?.support ?? null,
+        resistance: t?.sr?.resistance ?? null,
       };
+      const validated = validateCryptoSignal(base);
+      if (validated.validation_corrected) {
+        console.warn(`[crypto] señal corregida ${s.ticker} (${s.signal}): stop/target estaba del lado equivocado`);
+      }
+      return validated;
     });
 
-    parsed.assets.sort((a, b) => (b.probability_pct || 0) - (a.probability_pct || 0));
-    parsed.assets = enforceSignalDistribution(parsed.assets);
-    parsed.generated_at = new Date().toISOString();
+    const result = { market: snap.market, signals: parsed.signals };
 
     // Guardar en cache
     if (data.user_id) {
-      await setCachedAnalysis(data.user_id, "market", parsed);
+      await setCachedAnalysis(data.user_id, "crypto", result);
     }
 
-    return parsed;
+    return result;
+  },
+);
+
+export const getCryptoBars = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      symbol: z.string().min(1).max(20),
+      timeframe: z.enum(["1Hour", "4Hour", "1Day", "1Week"]).default("1Hour"),
+      limit: z.number().int().min(1).max(500).default(48),
+    }),
+  )
+  .handler(async ({ data }): Promise<{ bars: ChartBar[] }> => {
+    const bars = await getCryptoChartBars(data.symbol, data.timeframe, data.limit);
+    return { bars };
   });
-
-export function enforceSignalDistribution(assets: AssetSignal[]): AssetSignal[] {
-  if (!assets.length) return assets;
-  return [...assets].sort((a, b) => (b.probability_pct || 0) - (a.probability_pct || 0));
-}
-
-export function partitionByTechnicals<Q extends { ticker: string }>(
-  quotes: Q[],
-  technicals: Record<string, { rsi: number | null } | undefined>,
-): { sufficient: Q[]; insufficient: Q[] } {
-  const sufficient: Q[] = [];
-  const insufficient: Q[] = [];
-  for (const q of quotes) {
-    const t = technicals[q.ticker];
-    if (t && t.rsi != null) sufficient.push(q);
-    else insufficient.push(q);
-  }
-  return { sufficient, insufficient };
-}
-
-export function buildInsufficientSignal(ticker: string, price_usd: number): AssetSignal {
-  const caps = capsForTicker(ticker);
-  return {
-    ticker,
-    signal: "ESPERAR",
-    confidence: 50,
-    probability_pct: 50,
-    estimated_return_pct: 0,
-    horizon: "Sin datos",
-    horizon_days: 5,
-    risk_level: "Medio",
-    action_reason: "Sin datos técnicos suficientes para generar una señal honesta.",
-    risk_note: "No operes sin indicadores reales.",
-    stop_loss_pct: caps.slMax,
-    take_profit_pct: caps.tpMax,
-    entry_offset_pct: 0,
-    entry_price_usd: price_usd,
-    stop_price_usd: price_usd ? +(price_usd * (1 - caps.slMax / 100)).toFixed(2) : 0,
-    target_price_usd: price_usd ? +(price_usd * (1 + caps.tpMax / 100)).toFixed(2) : 0,
-    rsi: null,
-    rsi_label: "N/D",
-    technicals_partial: true,
-    data_insufficient: true,
-  };
-}
