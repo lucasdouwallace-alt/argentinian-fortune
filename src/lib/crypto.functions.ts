@@ -221,8 +221,8 @@ export const analyzeCrypto = createServerFn({ method: "POST" })
     user_id: z.string().optional(),
   }))
   .handler(async ({ data }): Promise<{ market: CryptoMarket; signals: CryptoSignal[]; cache_age_min?: number }> => {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error("GEMINI_API_KEY no configurada");
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) throw new Error("GROQ_API_KEY no configurada");
 
     // Cache: si no es force refresh, devolver análisis reciente
     if (!data.force && data.user_id) {
@@ -324,11 +324,11 @@ Devolvé SOLO JSON sin texto extra ni backticks:
 Generá señal para TODAS las cryptos con precio > 0.`;
 
     const callGemini = async () =>
-      queueGeminiCall(() => fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
+      queueGeminiCall(() => fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "gemini-2.0-flash",
+          model: "llama-3.3-70b-versatile",
           temperature: 0.1,
           messages: [
             { role: "system", content: ORACULO_SYSTEM_PROMPT + "\n\nIMPORTANTE: para esta llamada respondé SOLO JSON válido, sin formato visual." },
