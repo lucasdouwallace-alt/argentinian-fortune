@@ -89,3 +89,4 @@ export async function getSentiment(symbol: string): Promise<FinnhubSentiment | n
   cacheSet(cacheKey, sent, CACHE_TTL_MS.sentiment ?? 3_600_000);
   return sent;
 }
+
