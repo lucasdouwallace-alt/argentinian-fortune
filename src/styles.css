@@ -79,6 +79,11 @@
   .font-mono, [data-mono] { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 }
 
+@layer base {
+  /* Hide offline banner injected by @lovable.dev SDK */
+  .fixed.bottom-4.backdrop-blur { display: none !important; }
+}
+
 @layer utilities {
   .bg-glow { background-image: var(--gradient-glow); }
   .shadow-card { box-shadow: var(--shadow-card); }
