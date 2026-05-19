@@ -242,7 +242,7 @@ Respondé SOLO JSON válido sin texto extra ni backticks:
       const sent = sentMap[a.ticker];
       const news = newsMap[a.ticker] || [];
       const tech = alpacaTech[a.ticker];
-      const bb = td?.bbands ? bbandsPosition(td.bbands, a.entry_price_usd || 0) : null;
+      const bb = td?.bbands && a.entry_price_usd > 0 ? bbandsPosition(td.bbands, a.entry_price_usd || 0) : null;
       const validated: { signal: AssetSignal["signal"]; probability_pct: number; stop_loss_pct: number; take_profit_pct: number; target_adjusted?: boolean } = validateSignal({
         signal: a.signal,
         probability_pct: Number(a.probability_pct) || 50,
